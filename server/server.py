@@ -19,27 +19,85 @@ import json
 import sys
 from common.config import BUFFER_SIZE, HELLO, CHAT,DISCOVER_SERVER,SERVER_INFO
 
+SERVER_PORTS = [5001, 5002, 5003]
+
 class Server:
     def __init__(self, server_id, port):
         self.server_id = server_id
         self.port = port
+        self.members = {}  # server_id -> port
+        self.members[self.server_id] = self.port
 
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
         self.sock.bind(("127.0.0.1", self.port))
+        # self.send_hello() now calling inside lister() after socket is bound and listening starts
 
         print(f"[{self.server_id}] Server started on port {self.port}")
 
+
+
+    def send_hello(self):
+        hello_msg = {
+            "type": HELLO,
+            "server_id": self.server_id,
+            "port": self.port
+        }
+
+        for p in SERVER_PORTS:
+            if p != self.port:
+                self.sock.sendto(
+                    json.dumps(hello_msg).encode(),
+                    ("127.0.0.1", p)
+                )
+
+    # def listen(self):
+    #     while True:
+    #         data, addr = self.sock.recvfrom(BUFFER_SIZE)
+    #         msg = json.loads(data.decode())
+    #         self.handle_message(msg, addr)
+
+
     def listen(self):
+        self.send_hello()
         while True:
-            data, addr = self.sock.recvfrom(BUFFER_SIZE)
-            msg = json.loads(data.decode())
-            self.handle_message(msg, addr)
+            try:
+                data, addr = self.sock.recvfrom(BUFFER_SIZE)
+                msg = json.loads(data.decode())
+                self.handle_message(msg, addr)
+            except ConnectionResetError:
+                # Windows UDP reset — safe to ignore
+                continue
 
     def handle_message(self, msg, addr):
         msg_type = msg.get("type")
 
+        # if msg_type == HELLO:
+        #     print(f"[{self.server_id}] HELLO from {msg['sender_id']}")
         if msg_type == HELLO:
-            print(f"[{self.server_id}] HELLO from {msg['sender_id']}")
+            sender_id = msg["server_id"]
+            sender_port = msg["port"]
+
+            if sender_id not in self.members:
+                self.members[sender_id] = sender_port
+                print(f"[{self.server_id}] Discovered server {sender_id}")
+
+            reply = {
+                "type": "HELLO_REPLY",
+                "server_id": self.server_id,
+                "port": self.port
+            }
+            self.sock.sendto(json.dumps(reply).encode(), addr)
+
+        elif msg_type == "HELLO_REPLY":
+            sender_id = msg["server_id"]
+            sender_port = msg["port"]
+
+            if sender_id not in self.members:
+                self.members[sender_id] = sender_port
+                print(f"[{self.server_id}] Added server {sender_id}")
+
+
 
         elif msg_type == CHAT:
             print(f"[{self.server_id}] CHAT from client: {msg['payload']}")
