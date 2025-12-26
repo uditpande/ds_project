@@ -1,0 +1,12 @@
+Implemented so far:
+
+ UDP-based server discovery
+ Dynamic membership
+ Windows-safe UDP handling
+ Client discovery support
+ Clean separation of concerns
+
+ TODO (before implementing WLAN etc):
+ Leader election
+ Replication
+ Fault tolerance
