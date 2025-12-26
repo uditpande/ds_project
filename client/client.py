@@ -86,8 +86,13 @@ class Client:
                 reply = json.loads(data.decode())
                 if reply["type"] == "SERVER_INFO":
                     servers.append(reply)
+
             except socket.timeout:
                 break
+
+            except ConnectionResetError:
+                # Windows sends this if a port is unreachable (safe to ignore)
+                continue
 
         if not servers:
             raise Exception("No servers found")
