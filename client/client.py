@@ -1,17 +1,4 @@
-# import socket
-# import json
-#
-# SERVER_ADDR = ("127.0.0.1", 5000)
-#
-# sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-#
-# while True:
-#     text = input(">> ")
-#     msg = {
-#         "type": "CHAT",
-#         "payload": text
-#     }
-#     sock.sendto(json.dumps(msg).encode(), SERVER_ADDR)
+
 
 import socket
 import json
@@ -44,24 +31,7 @@ class Client:
 
             self.sock.sendto(json.dumps(msg).encode(), self.server_addr)
 
-    #initial function, always chose s1 (connection bias int the new function, we added random connection from the replies)
-    # def discover_server(self):
-    #     discovery_msg = {
-    #         "type": "DISCOVER_SERVER",
-    #         "sender_id": self.client_id
-    #     }
-    #
-    #     for port in DISCOVERY_PORTS:
-    #         self.sock.sendto(
-    #             json.dumps(discovery_msg).encode(),
-    #             ("127.0.0.1", port)
-    #         )
-    #
-    #     data, addr = self.sock.recvfrom(BUFFER_SIZE)
-    #     reply = json.loads(data.decode())
-    #     print(f"[{self.client_id}] Connected to {reply['server_id']}")
-    #
-    #     return ("127.0.0.1", reply["port"])
+
 
     def discover_server(self):
         discovery_msg = {
