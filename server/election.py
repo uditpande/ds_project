@@ -23,6 +23,10 @@ class ElectionManager:
         self.waiting_ok = False
         self.ok_deadline = 0.0
 
+        # MINIMAL ADD: separate wait for COORDINATOR (avoids endless restarts)
+        self.waiting_coord = False
+        self.coord_deadline = 0.0
+
     def start_election(self):
         if self.in_election:
             return
@@ -30,6 +34,7 @@ class ElectionManager:
         self.in_election = True
         self.got_ok = False
         self.waiting_ok = False
+        self.waiting_coord = False
 
         my_pri = server_priority(self.server.server_id)
 
@@ -41,7 +46,7 @@ class ElectionManager:
                 higher.append((sid, port))
 
         if not higher:
-            # nobody higher -> the current server becomes the  leader
+            # nobody higher -> the current server becomes the leader
             self.become_leader()
             return
 
@@ -52,32 +57,32 @@ class ElectionManager:
         for sid, port in higher:
             self.server.sock.sendto(data, ("127.0.0.1", port))
 
-        # wait for OK
+        # wait for OK (phase 1)
         self.waiting_ok = True
-        self.ok_deadline = time.time() + 1.0  # 1 second window, experiment with it later
-
-    # def tick(self):
-    #     """Called periodically from server loop to handle timeouts."""
-    #     if self.waiting_ok and time.time() > self.ok_deadline:
-    #         # Coordinator did not arrive in time
-    #         self.waiting_ok = False
-    #         self.in_election = False
-    #         # Restart election to recover
-    #         self.start_election()
+        self.ok_deadline = time.time() + 1.0  # OK window
 
     def tick(self):
-        if self.waiting_ok and time.time() > self.ok_deadline:
+        now = time.time()
+
+        # Phase 1: waiting for OKs from higher nodes
+        if self.in_election and self.waiting_ok and now > self.ok_deadline:
             self.waiting_ok = False
 
             if not self.got_ok:
                 # No higher node responded -> I can become leader
-                self.in_election = False
                 self.become_leader()
-            else:
-                # Higher node DID respond, but coordinator didn't arrive
-                # Restart election to recover, but do NOT self-declare yet
-                self.in_election = False
-                self.start_election()
+                return
+
+            # Higher node DID respond -> now wait for COORDINATOR (phase 2)
+            self.waiting_coord = True
+            self.coord_deadline = now + 2.0  # coordinator window
+
+        # Phase 2: waiting for COORDINATOR announcement
+        if self.in_election and self.waiting_coord and now > self.coord_deadline:
+            # Coordinator never arrived -> restart election
+            self.waiting_coord = False
+            self.in_election = False
+            self.start_election()
 
     def on_election(self, msg, addr):
         """Handle incoming ELECTION message."""
@@ -93,22 +98,31 @@ class ElectionManager:
 
     def on_election_ok(self, msg, addr):
         """Someone higher exists, so I should not declare myself leader."""
-        if self.in_election:
-            self.got_ok = True
-            # Someone higher exists, so we wait for COORDINATOR
-            self.waiting_ok = True
-            self.ok_deadline = time.time() + 2.0  # wait longer for coordinator
+        if not self.in_election:
+            return
+
+        self.got_ok = True
+        # IMPORTANT: do NOT extend deadlines here; just record got_ok.
+        # We keep waiting until ok_deadline and then move to waiting_coord.
 
     def on_coordinator(self, msg, addr):
         leader_id = msg["server_id"]
+
         self.in_election = False
         self.waiting_ok = False
+        self.got_ok = False
+        self.waiting_coord = False
+
         self.server.set_leader(leader_id)
 
     def become_leader(self):
+        leader_id = self.server.server_id
+
         self.in_election = False
         self.waiting_ok = False
-        leader_id = self.server.server_id
+        self.got_ok = False
+        self.waiting_coord = False
+
         self.server.set_leader(leader_id)
 
         # broadcast COORDINATOR to all
