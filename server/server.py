@@ -20,9 +20,10 @@ class Server:
         self.sock.bind(("127.0.0.1", self.port))
         # self.send_hello() now calling inside lister() after socket is bound and listening starts
 
-        # leader election
+        # leader election, added by udit after implementing elcection logic in election.py
         self.leader_id = None
         self.election = ElectionManager(self)
+        self.last_election_time = 0.0
 
         print(f"[{self.server_id}] Server started on port {self.port}")
 
@@ -42,12 +43,6 @@ class Server:
                     ("127.0.0.1", p)
                 )
 
-    # def listen(self):
-    #     while True:
-    #         data, addr = self.sock.recvfrom(BUFFER_SIZE)
-    #         msg = json.loads(data.decode())
-    #         self.handle_message(msg, addr)
-
     #after sending hello once, server stays alive
     def listen(self):
         self.send_hello()
@@ -56,6 +51,7 @@ class Server:
 
         while True:
             try:
+                #added after implmenting election
                 self.election.tick()
                 data, addr = self.sock.recvfrom(BUFFER_SIZE)
                 msg = json.loads(data.decode())
@@ -133,6 +129,11 @@ class Server:
         print(f"[{self.server_id}] Leader is now {self.leader_id}")
 
     def maybe_start_election(self, newly_seen_id=None):
+
+        now = time.time()
+        # 0.5s cooldown to prevent election storms
+        if now - self.last_election_time < 0.5:
+            return
         # Don’t start if election already running
         if getattr(self.election, "in_election", False):
             return
