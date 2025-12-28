@@ -6,8 +6,7 @@
   <component name="ChangeListManager">
     <list default="true" id="0133806b-6ae6-4679-a91a-7103a1eda810" name="Changes" comment="Initial Commit, made a basic project structure.">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/commands" beforeDir="false" afterPath="$PROJECT_DIR$/commands" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/step" beforeDir="false" afterPath="$PROJECT_DIR$/step" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/server/server.py" beforeDir="false" afterPath="$PROJECT_DIR$/server/server.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -61,7 +60,7 @@
       <recent name="D:\ds_chat_application\client" />
     </key>
   </component>
-  <component name="RunManager" selected="Python.server">
+  <component name="RunManager" selected="Python.client">
     <configuration name="client" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="ds_chat_application" />
       <option name="ENV_FILES" value="" />
@@ -108,8 +107,8 @@
     </configuration>
     <recent_temporary>
       <list>
-        <item itemvalue="Python.server" />
         <item itemvalue="Python.client" />
+        <item itemvalue="Python.server" />
       </list>
     </recent_temporary>
   </component>
