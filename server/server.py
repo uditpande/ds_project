@@ -16,7 +16,7 @@ from common.config import (
 from server.election import ElectionManager
 
 
-SERVER_PORTS = [5001, 5002, 5003]  # will replace by broadcast later
+SERVER_PORTS = [5001, 5002, 5003, 5004, 5005]  # will replace by broadcast later
 
 
 class Server:
@@ -55,7 +55,7 @@ class Server:
     def listen(self):
         self.send_hello()
         # give discovery a little more time before the first election
-        time.sleep(0.6)
+        time.sleep(0.3)
 
         # start election on startup
         self.election.start_election()
