@@ -57,9 +57,11 @@ class ElectionManager:
     def tick(self):
         """Called periodically from server loop to handle timeouts."""
         if self.waiting_ok and time.time() > self.ok_deadline:
-            # no higher node responded -> I become leader
+            # Coordinator did not arrive in time
             self.waiting_ok = False
-            self.become_leader()
+            self.in_election = False
+            # Restart election to recover
+            self.start_election()
 
     def on_election(self, msg, addr):
         """Handle incoming ELECTION message."""
@@ -76,9 +78,9 @@ class ElectionManager:
     def on_election_ok(self, msg, addr):
         """Someone higher exists, so I should not declare myself leader."""
         if self.in_election:
-            self.waiting_ok = False
-            # Now we wait for COORDINATOR from whoever wins.
-            # (In Phase A we keep it simple and just stop here.)
+            # Someone higher exists, so we wait for COORDINATOR
+            self.waiting_ok = True
+            self.ok_deadline = time.time() + 2.0  # wait longer for coordinator
 
     def on_coordinator(self, msg, addr):
         leader_id = msg["server_id"]
