@@ -19,6 +19,7 @@ class ElectionManager:
         """
         self.server = server
         self.in_election = False
+        self.got_ok = False
         self.waiting_ok = False
         self.ok_deadline = 0.0
 
@@ -27,6 +28,7 @@ class ElectionManager:
             return
 
         self.in_election = True
+        self.got_ok = False
         self.waiting_ok = False
 
         my_pri = server_priority(self.server.server_id)
@@ -54,14 +56,28 @@ class ElectionManager:
         self.waiting_ok = True
         self.ok_deadline = time.time() + 1.0  # 1 second window, experiment with it later
 
+    # def tick(self):
+    #     """Called periodically from server loop to handle timeouts."""
+    #     if self.waiting_ok and time.time() > self.ok_deadline:
+    #         # Coordinator did not arrive in time
+    #         self.waiting_ok = False
+    #         self.in_election = False
+    #         # Restart election to recover
+    #         self.start_election()
+
     def tick(self):
-        """Called periodically from server loop to handle timeouts."""
         if self.waiting_ok and time.time() > self.ok_deadline:
-            # Coordinator did not arrive in time
             self.waiting_ok = False
-            self.in_election = False
-            # Restart election to recover
-            self.start_election()
+
+            if not self.got_ok:
+                # No higher node responded -> I can become leader
+                self.in_election = False
+                self.become_leader()
+            else:
+                # Higher node DID respond, but coordinator didn't arrive
+                # Restart election to recover, but do NOT self-declare yet
+                self.in_election = False
+                self.start_election()
 
     def on_election(self, msg, addr):
         """Handle incoming ELECTION message."""
@@ -78,6 +94,7 @@ class ElectionManager:
     def on_election_ok(self, msg, addr):
         """Someone higher exists, so I should not declare myself leader."""
         if self.in_election:
+            self.got_ok = True
             # Someone higher exists, so we wait for COORDINATOR
             self.waiting_ok = True
             self.ok_deadline = time.time() + 2.0  # wait longer for coordinator

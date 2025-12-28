@@ -22,8 +22,10 @@ class Server:
 
         # leader election, added by udit after implementing elcection logic in election.py
         self.leader_id = None
+
         self.election = ElectionManager(self)
         self.last_election_time = 0.0
+
 
         print(f"[{self.server_id}] Server started on port {self.port}")
 
@@ -46,8 +48,9 @@ class Server:
     #after sending hello once, server stays alive
     def listen(self):
         self.send_hello()
-        time.sleep(0.2)
-        # no election call here; discovery triggers election
+        time.sleep(0.3)
+        # start election on startup
+        self.election.start_election()
 
         while True:
             try:
@@ -125,6 +128,8 @@ class Server:
         return int(sid[1:])
 
     def set_leader(self, leader_id):
+        if self.leader_id == leader_id:
+            return  # avoid duplicate prints / duplicate state transitions
         self.leader_id = leader_id
         print(f"[{self.server_id}] Leader is now {self.leader_id}")
 
