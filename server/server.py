@@ -18,7 +18,7 @@ from common.config import (
 from server.election import ElectionManager
 
 
-SERVER_PORTS = [5001, 5002, 5003]  # will replace by broadcast later
+SERVER_PORTS = [5001, 5002, 5003, 5004, 5005]  # will replace by broadcast later
 
 
 class Server:
@@ -43,9 +43,13 @@ class Server:
         # Heartbeat
         self.heartbeat = HeartbeatManager(self)
 
-        self.last_election_time = 0.0
+        self.last_election_time = 0.0        #
+        # added below to implement periodic hello that would help counter packet loss etc if hello is only send once or after rejoin, new join or election.
+        self.hello_interval = 1.0
+        self.last_hello_sent = 0.0
 
-
+        # handling duplicate server nodes
+        self.seen_dup_sources = set()  # set of (server_id, ip, port)
 
         print(f"[{self.server_id}] Server started on port {self.port}")
 
@@ -94,6 +98,13 @@ class Server:
             self.election.tick()
             self.heartbeat.tick()
 
+            # --- NEW: periodic hello (keeps discovery fresh) ---
+            now = time.time()
+            if now - self.last_hello_sent >= self.hello_interval:
+                self.send_hello()
+                self.last_hello_sent = now
+            # -----------------------------------------------
+
             try:
                 data, addr = self.sock.recvfrom(BUFFER_SIZE)
             except (socket.timeout, TimeoutError):
@@ -108,20 +119,46 @@ class Server:
         msg_type = msg.get("type")
 
         if msg_type == HELLO:
-            # prevent duplicate server ids
+            # prevent self duplicate server ids
+            # if msg["server_id"] == self.server_id:
+            #     print(f"[{self.server_id}] ERROR: Duplicate server ID detected. Ignoring.")
+            #     return
+
             if msg["server_id"] == self.server_id:
-                print(f"[{self.server_id}] ERROR: Duplicate server ID detected. Ignoring.")
+                # Duplicate of *my own ID* coming from another source (or noisy loopback)
+                key = (msg["server_id"], addr[0], msg.get("port"))
+                if key not in self.seen_dup_sources:
+                    print(
+                        f"[{self.server_id}] ERROR: Duplicate server ID '{msg['server_id']}' from "
+                        f"{addr[0]}:{msg.get('port')}. Ignoring."
+                    )
+                    self.seen_dup_sources.add(key)
                 return
 
             sender_id = msg["server_id"]
             sender_port = msg["port"]
             sender_ip = addr[0]  # trust UDP source IP (WLAN-ready)
 
-            if sender_id not in self.members:
-                self.members[sender_id] = (sender_ip, sender_port)
+            # If we already know this ID but it comes from a different address, it's a duplicate ID conflict.
+            if sender_id in self.members and self.members[sender_id] != (sender_ip, sender_port):
+                key = (sender_id, sender_ip, sender_port)
+                if key not in self.seen_dup_sources:
+                    print(
+                        f"[{self.server_id}] ERROR: Duplicate server ID '{sender_id}' from "
+                        f"{sender_ip}:{sender_port}. Existing is {self.members[sender_id]}. Ignoring."
+                    )
+                    self.seen_dup_sources.add(key)
+                return
+
+            is_new = sender_id not in self.members
+            self.members[sender_id] = (sender_ip, sender_port)
+
+            if is_new:
                 print(f"[{self.server_id}] Discovered server {sender_id}")
                 print(f"[{self.server_id}] Members: {self.members}")
-                self.maybe_start_election(newly_seen_id=sender_id)
+
+            # IMPORTANT: trigger election check even if it's not a new member (rejoin case)
+            self.maybe_start_election(newly_seen_id=sender_id)
 
             reply = {"type": HELLO_REPLY, "server_id": self.server_id, "port": self.port}
             self.sock.sendto(json.dumps(reply).encode(), addr)
@@ -131,11 +168,27 @@ class Server:
             sender_port = msg["port"]
             sender_ip = addr[0]
 
-            if sender_id not in self.members:
-                self.members[sender_id] = (sender_ip, sender_port)
+            # If we already know this ID but it comes from a different address, it's a duplicate ID conflict.
+            if sender_id in self.members and self.members[sender_id] != (sender_ip, sender_port):
+                key = (sender_id, sender_ip, sender_port)
+                if key not in self.seen_dup_sources:
+                    print(
+                        f"[{self.server_id}] ERROR: Duplicate server ID '{sender_id}' from "
+                        f"{sender_ip}:{sender_port}. Existing is {self.members[sender_id]}. Ignoring."
+                    )
+                    self.seen_dup_sources.add(key)
+                return
+
+            is_new = sender_id not in self.members
+            self.members[sender_id] = (sender_ip, sender_port)
+
+            if is_new:
                 print(f"[{self.server_id}] Added server {sender_id}")
                 print(f"[{self.server_id}] Members: {self.members}")
-                self.maybe_start_election(newly_seen_id=sender_id)
+
+            # IMPORTANT: election check even if already known
+            self.maybe_start_election(newly_seen_id=sender_id)
+
 
         elif msg_type == CHAT:
             print(f"[{self.server_id}] CHAT from client: {msg['payload']}")
