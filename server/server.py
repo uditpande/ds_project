@@ -2,6 +2,7 @@ import socket
 import json
 import sys
 import time
+from server.heartbeat import HeartbeatManager
 from common.config import (
     BUFFER_SIZE,
     HELLO,
@@ -12,11 +13,12 @@ from common.config import (
     ELECTION,
     ELECTION_OK,
     COORDINATOR,
+    HEARTBEAT
 )
 from server.election import ElectionManager
 
 
-SERVER_PORTS = [5001, 5002, 5003, 5004, 5005]  # will replace by broadcast later
+SERVER_PORTS = [5001, 5002, 5003]  # will replace by broadcast later
 
 
 class Server:
@@ -24,56 +26,79 @@ class Server:
         self.server_id = server_id
         self.port = port
 
-        # membership
-        self.members = {}  # server_id -> port
-        self.members[self.server_id] = self.port
+        # members: server_id -> (ip, port)
+        self.members = {}
+        # self entry: ip isn't really used (we never send to ourselves), but keep consistent format
+        self.members[self.server_id] = ("127.0.0.1", self.port)
 
         # sockets
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.bind(("127.0.0.1", self.port))
+
+        # IMPORTANT for WLAN later: listen on all interfaces, not just localhost
+        self.sock.bind(("0.0.0.0", self.port))
 
         # leader election
         self.leader_id = None
         self.election = ElectionManager(self)
+        # Heartbeat
+        self.heartbeat = HeartbeatManager(self)
+
         self.last_election_time = 0.0
+
+
 
         print(f"[{self.server_id}] Server started on port {self.port}")
 
-    # discovery initiation: Servers that aren’t running are ignored, running servers reply
+    # helper: normalize member values (supports old int-only format just in case)
+    def member_addr(self, sid):
+        v = self.members[sid]
+        if isinstance(v, tuple):
+            return v  # (ip, port)
+        return ("127.0.0.1", v)  # backward-compat
+
+    # discovery initiation
     def send_hello(self):
         hello_msg = {
             "type": HELLO,
             "server_id": self.server_id,
             "port": self.port,
         }
+        data = json.dumps(hello_msg).encode()
 
+        # Local testing mode: still ping known local ports on localhost.
         for p in SERVER_PORTS:
             if p != self.port:
-                self.sock.sendto(json.dumps(hello_msg).encode(), ("127.0.0.1", p))
+                self.sock.sendto(data, ("127.0.0.1", p))
 
-    # after sending hello once, server stays alive
+         # ping any already-known members (WLAN-friendly, harmless locally)
+        for sid, (ip, port) in self.members.items():
+            if sid == self.server_id:
+                continue
+            try:
+                self.sock.sendto(data, (ip, port))
+            except OSError:
+                # ignore transient send errors
+                pass
+
     def listen(self):
         self.send_hello()
-        # give discovery a little more time before the first election
         time.sleep(0.3)
 
         # start election on startup
         self.election.start_election()
 
-        # IMPORTANT: allow tick() to run even when no packets arrive
+        # allow tick() to run even when no packets arrive
         self.sock.settimeout(0.1)
 
         while True:
-            # Always advance election timers
             self.election.tick()
+            self.heartbeat.tick()
 
             try:
                 data, addr = self.sock.recvfrom(BUFFER_SIZE)
             except (socket.timeout, TimeoutError):
-                # No message arrived; loop again so tick() keeps running
                 continue
             except ConnectionResetError:
-                # handling windows UDP reset — safe to ignore
                 continue
 
             msg = json.loads(data.decode())
@@ -90,9 +115,10 @@ class Server:
 
             sender_id = msg["server_id"]
             sender_port = msg["port"]
+            sender_ip = addr[0]  # trust UDP source IP (WLAN-ready)
 
             if sender_id not in self.members:
-                self.members[sender_id] = sender_port
+                self.members[sender_id] = (sender_ip, sender_port)
                 print(f"[{self.server_id}] Discovered server {sender_id}")
                 print(f"[{self.server_id}] Members: {self.members}")
                 self.maybe_start_election(newly_seen_id=sender_id)
@@ -103,9 +129,10 @@ class Server:
         elif msg_type == HELLO_REPLY:
             sender_id = msg["server_id"]
             sender_port = msg["port"]
+            sender_ip = addr[0]
 
             if sender_id not in self.members:
-                self.members[sender_id] = sender_port
+                self.members[sender_id] = (sender_ip, sender_port)
                 print(f"[{self.server_id}] Added server {sender_id}")
                 print(f"[{self.server_id}] Members: {self.members}")
                 self.maybe_start_election(newly_seen_id=sender_id)
@@ -126,20 +153,22 @@ class Server:
         elif msg_type == COORDINATOR:
             self.election.on_coordinator(msg, addr)
 
+        elif msg_type == HEARTBEAT:
+            self.heartbeat.on_heartbeat(msg, addr)
+
+
         else:
             print(f"[{self.server_id}] Unknown message: {msg}")
 
-    # Leader election etc:
-
-    # function to compare server IDs
     def priority(self, sid: str) -> int:
         return int(sid[1:])
 
     def set_leader(self, leader_id):
         if self.leader_id == leader_id:
-            return  # avoid duplicate prints / duplicate state transitions
+            return
         self.leader_id = leader_id
         print(f"[{self.server_id}] Leader is now {self.leader_id}")
+        self.heartbeat.on_leader_changed()
 
     def maybe_start_election(self, newly_seen_id=None):
         now = time.time()

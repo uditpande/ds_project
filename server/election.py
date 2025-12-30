@@ -13,7 +13,7 @@ class ElectionManager:
         server is our Server instance from server.py
         We use it for:
           - server.server_id
-          - server.members
+          - server.members  (now: server_id -> (ip, port))
           - server.sock.sendto(...)
           - server.set_leader(...)
         """
@@ -39,11 +39,13 @@ class ElectionManager:
         my_pri = server_priority(self.server.server_id)
 
         higher = []
-        for sid, port in self.server.members.items():
+        for sid, addr in self.server.members.items():
             if sid == self.server.server_id:
                 continue
+
+            ip, port = addr
             if server_priority(sid) > my_pri:
-                higher.append((sid, port))
+                higher.append((sid, ip, port))
 
         if not higher:
             # nobody higher -> the current server becomes the leader
@@ -54,8 +56,8 @@ class ElectionManager:
         msg = {"type": ELECTION, "server_id": self.server.server_id}
         data = json.dumps(msg).encode()
 
-        for sid, port in higher:
-            self.server.sock.sendto(data, ("127.0.0.1", port))
+        for sid, ip, port in higher:
+            self.server.sock.sendto(data, (ip, port))
 
         # wait for OK (phase 1)
         self.waiting_ok = True
@@ -128,7 +130,9 @@ class ElectionManager:
         # broadcast COORDINATOR to all
         coord = {"type": COORDINATOR, "server_id": leader_id}
         data = json.dumps(coord).encode()
-        for sid, port in self.server.members.items():
+
+        for sid, addr in self.server.members.items():
             if sid == self.server.server_id:
                 continue
-            self.server.sock.sendto(data, ("127.0.0.1", port))
+            ip, port = addr
+            self.server.sock.sendto(data, (ip, port))
