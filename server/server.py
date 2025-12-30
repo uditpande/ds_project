@@ -13,7 +13,9 @@ from common.config import (
     ELECTION,
     ELECTION_OK,
     COORDINATOR,
-    HEARTBEAT
+    HEARTBEAT,
+    CLIENT_WHO_IS_LEADER,
+    CLIENT_LEADER_INFO
 )
 from server.election import ElectionManager
 
@@ -188,6 +190,29 @@ class Server:
 
             # IMPORTANT: election check even if already known
             self.maybe_start_election(newly_seen_id=sender_id)
+
+        elif msg_type == CLIENT_WHO_IS_LEADER:
+            # If leader not known yet (startup edge), respond with best-known info
+            leader_id = self.leader_id if self.leader_id is not None else self.server_id
+
+            # leader address: if leader is me, use my addr; else look up in members
+            if leader_id == self.server_id:
+                leader_ip, leader_port = "127.0.0.1", self.port
+            else:
+                # If we don't have the leader in members yet, fall back to self
+                if leader_id in self.members:
+                    leader_ip, leader_port = self.member_addr(leader_id)
+                else:
+                    leader_id = self.server_id
+                    leader_ip, leader_port = "127.0.0.1", self.port
+
+            reply = {
+                "type": CLIENT_LEADER_INFO,
+                "leader_id": leader_id,
+                "leader_ip": leader_ip,
+                "leader_port": leader_port
+            }
+            self.sock.sendto(json.dumps(reply).encode(), addr)
 
 
         elif msg_type == CHAT:

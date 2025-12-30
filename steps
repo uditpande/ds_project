@@ -5,9 +5,10 @@ Implemented so far:
  Windows-safe UDP handling
  Client discovery support
  Clean separation of concerns
+ Leader election
 
  TODO (before implementing WLAN etc):
- Leader election- udit
+ Members cleanup (implement restarting node on different ports and noe being detected as duplicatess)
  Replication - akshatha
  Server multicast - akshatha
  Fault tolerance
