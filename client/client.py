@@ -4,6 +4,8 @@ import sys
 from common.config import BUFFER_SIZE, CHAT, CLIENT_WHO_IS_LEADER, CLIENT_LEADER_INFO, CLIENT_REDIRECT, CHAT_ACK
 import time
 import random
+import uuid
+
 
 DISCOVERY_PORTS = [5001, 5002, 5003]  # known range
 
@@ -11,12 +13,25 @@ class Client:
     def __init__(self, client_id):
         self.client_id = client_id
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.seq = 0
+        self.session_id = uuid.uuid4().hex[:6]
+
+    def flush_socket(self):
+        self.sock.settimeout(0.0)
+        while True:
+            try:
+                self.sock.recvfrom(BUFFER_SIZE)
+            except (BlockingIOError, socket.timeout, ConnectionResetError):
+                break
+
 
     def start(self):
         print(f"[{self.client_id}] Client started")
 
         any_server = self.discover_server()
         self.server_addr = self.get_leader_addr(any_server)
+
+        self.flush_socket()
 
         while True:
             text = input(">> ")
@@ -77,9 +92,13 @@ class Client:
         return ("127.0.0.1", chosen["port"])
 
     def send_chat(self, text):
+        self.seq += 1
+        msg_id = f"{self.client_id}-{self.session_id}-{self.seq}"
+
         msg = {
             "type": CHAT,
             "sender_id": self.client_id,
+            "msg_id": msg_id,
             "payload": text
         }
 
@@ -106,11 +125,11 @@ class Client:
                     # keep looping to wait for ACK
                     continue
 
-                if rtype == CHAT_ACK:
-                    # success
-                    print(f"[{self.client_id}] got ACK")
-
+                if rtype == CHAT_ACK and reply.get("msg_id") == msg_id:
+                    print(f"[{self.client_id}] got ACK for {msg_id}")
                     return
+
+
 
                 # ignore unrelated packets
             except socket.timeout:
@@ -123,7 +142,17 @@ class Client:
         print(f"[{self.client_id}] Leader unreachable, rediscovering...")
         any_server = self.discover_server()
         self.server_addr = self.get_leader_addr(any_server)
+        # self.sock.sendto(json.dumps(msg).encode(), self.server_addr)
         self.sock.sendto(json.dumps(msg).encode(), self.server_addr)
+        # (optional) wait a bit for ACK; if none, just return
+        self.sock.settimeout(0.5)
+        try:
+            data, _ = self.sock.recvfrom(BUFFER_SIZE)
+            reply = json.loads(data.decode())
+            if reply.get("type") == CHAT_ACK and reply.get("msg_id") == msg_id:
+                print(f"[{self.client_id}] got ACK for {msg_id} after rediscovery")
+        except (socket.timeout, ConnectionResetError):
+            pass
 
 
 if __name__ == "__main__":

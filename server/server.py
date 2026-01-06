@@ -2,6 +2,7 @@ import socket
 import json
 import sys
 import time
+
 from server.heartbeat import HeartbeatManager
 from common.config import (
     BUFFER_SIZE,
@@ -54,8 +55,11 @@ class Server:
 
         # handling duplicate server nodes
         self.seen_dup_sources = set()  # set of (server_id, ip, port)
+        # deduplication of client chat messages (leader-side)
+        self.seen_chat = {}  # sender_id -> set of msg_ids
 
         print(f"[{self.server_id}] Server started on port {self.port}")
+
 
     # helper: normalize member values (supports old int-only format just in case)
     def member_addr(self, sid):
@@ -237,10 +241,31 @@ class Server:
                 self.sock.sendto(json.dumps(reply).encode(), addr)
                 return
 
-            # I am the leader
-            print(f"[{self.server_id}] CHAT from client: {msg['payload']}")
-            # send chat acknowledgment
-            self.sock.sendto(json.dumps({"type": CHAT_ACK}).encode(), addr)
+            # ---------------- leader dedup logic ----------------
+            sender = msg.get("sender_id")
+            msg_id = msg.get("msg_id")
+
+            if sender and msg_id:
+                seen = self.seen_chat.setdefault(sender, set())
+                if msg_id in seen:
+                    # duplicate message -> ACK again, but do NOT reprocess
+                    self.sock.sendto(json.dumps({
+                        "type": CHAT_ACK,
+                        "msg_id": msg_id
+                    }).encode(), addr)
+                    return
+                seen.add(msg_id)
+            # ----------------------------------------------------
+
+            # I am the leader (first time seeing this message)
+            # print(f"[{self.server_id}] CHAT from client: {msg.get('payload')}")
+            print(f"[{self.server_id}] CHAT {msg_id} from {sender}: {msg.get('payload')}")
+
+            # send chat acknowledgment (with msg_id)
+            self.sock.sendto(json.dumps({
+                "type": CHAT_ACK,
+                "msg_id": msg_id
+            }).encode(), addr)
 
 
         elif msg_type == DISCOVER_SERVER:
