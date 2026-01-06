@@ -15,7 +15,9 @@ from common.config import (
     COORDINATOR,
     HEARTBEAT,
     CLIENT_WHO_IS_LEADER,
-    CLIENT_LEADER_INFO
+    CLIENT_LEADER_INFO,
+    CLIENT_REDIRECT,
+    CHAT_ACK
 )
 from server.election import ElectionManager
 
@@ -215,8 +217,31 @@ class Server:
             self.sock.sendto(json.dumps(reply).encode(), addr)
 
 
+        # elif msg_type == CHAT:
+        #     print(f"[{self.server_id}] CHAT from client: {msg['payload']}")
+
         elif msg_type == CHAT:
+            # Only leader should accept chat
+            if self.leader_id != self.server_id:
+                # redirect client to leader
+                if self.leader_id and self.leader_id in self.members:
+                    leader_ip, leader_port = self.member_addr(self.leader_id)
+                else:
+                    leader_ip, leader_port = "127.0.0.1", self.port
+
+                reply = {
+                    "type": CLIENT_REDIRECT,
+                    "leader_ip": leader_ip,
+                    "leader_port": leader_port
+                }
+                self.sock.sendto(json.dumps(reply).encode(), addr)
+                return
+
+            # I am the leader
             print(f"[{self.server_id}] CHAT from client: {msg['payload']}")
+            # send chat acknowledgment
+            self.sock.sendto(json.dumps({"type": CHAT_ACK}).encode(), addr)
+
 
         elif msg_type == DISCOVER_SERVER:
             reply = {"type": SERVER_INFO, "server_id": self.server_id, "port": self.port}

@@ -8,7 +8,7 @@ Implemented so far:
  Leader election
 
  TODO (before implementing WLAN etc):
- Members cleanup (implement restarting node on different ports and noe being detected as duplicatess)
- Replication - akshatha
- Server multicast - akshatha
+ Members cleanup (implement restarting node on different ports and not being detected as duplicatess)
+ Replication - Akshatha
+ Server multicast - Akshatha
  Fault tolerance

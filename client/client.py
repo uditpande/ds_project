@@ -1,7 +1,7 @@
 import socket
 import json
 import sys
-from common.config import BUFFER_SIZE, CHAT, CLIENT_WHO_IS_LEADER, CLIENT_LEADER_INFO
+from common.config import BUFFER_SIZE, CHAT, CLIENT_WHO_IS_LEADER, CLIENT_LEADER_INFO, CLIENT_REDIRECT, CHAT_ACK
 import time
 import random
 
@@ -20,12 +20,7 @@ class Client:
 
         while True:
             text = input(">> ")
-            msg = {
-                "type": CHAT,
-                "sender_id": self.client_id,
-                "payload": text
-            }
-            self.sock.sendto(json.dumps(msg).encode(), self.server_addr)
+            self.send_chat(text)
 
     def get_leader_addr(self, any_server_addr):
         msg = {"type": CLIENT_WHO_IS_LEADER}
@@ -80,6 +75,55 @@ class Client:
         chosen = random.choice(servers)
         print(f"[{self.client_id}] Discovered server {chosen['server_id']} on port {chosen['port']}")
         return ("127.0.0.1", chosen["port"])
+
+    def send_chat(self, text):
+        msg = {
+            "type": CHAT,
+            "sender_id": self.client_id,
+            "payload": text
+        }
+
+        # send once to current leader addr
+        self.sock.sendto(json.dumps(msg).encode(), self.server_addr)
+
+        # wait briefly for either ACK or REDIRECT
+        self.sock.settimeout(0.5)
+        end = time.time() + 0.5
+
+        while time.time() < end:
+            try:
+                data, _ = self.sock.recvfrom(BUFFER_SIZE)
+                reply = json.loads(data.decode())
+
+                rtype = reply.get("type")
+
+                if rtype == CLIENT_REDIRECT:
+                    self.server_addr = (reply["leader_ip"], reply["leader_port"])
+                    print(f"[{self.client_id}] Redirected to leader {self.server_addr}")
+
+                    # resend once to redirected leader
+                    self.sock.sendto(json.dumps(msg).encode(), self.server_addr)
+                    # keep looping to wait for ACK
+                    continue
+
+                if rtype == CHAT_ACK:
+                    # success
+                    print(f"[{self.client_id}] got ACK")
+
+                    return
+
+                # ignore unrelated packets
+            except socket.timeout:
+                return
+            except ConnectionResetError:
+                # Windows UDP: happens if destination port is closed (leader died)
+                break
+
+        # If we got here, leader likely died → rediscover and retry once
+        print(f"[{self.client_id}] Leader unreachable, rediscovering...")
+        any_server = self.discover_server()
+        self.server_addr = self.get_leader_addr(any_server)
+        self.sock.sendto(json.dumps(msg).encode(), self.server_addr)
 
 
 if __name__ == "__main__":
