@@ -1,7 +1,8 @@
 import socket
 import json
 import sys
-from common.config import BUFFER_SIZE, CHAT, CLIENT_WHO_IS_LEADER, CLIENT_LEADER_INFO, CLIENT_REDIRECT, CHAT_ACK
+from common.config import (BUFFER_SIZE, CHAT, CLIENT_WHO_IS_LEADER, CLIENT_LEADER_INFO, CLIENT_REDIRECT,
+                           CHAT_ACK,CLIENT_REGISTER,CLIENT_REGISTERED)
 import time
 import random
 import uuid
@@ -15,6 +16,59 @@ class Client:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.seq = 0
         self.session_id = uuid.uuid4().hex[:6]
+
+    def register(self, username=None):
+        """
+        Register with the leader. Follows redirects.
+        Stores the server-assigned client_id (e.g., C1) if returned.
+        """
+        if username is None:
+            username = self.client_id  # default: use provided CLI id as username label
+
+        req_id = uuid.uuid4().hex  # for dedup on leader
+        msg = {
+            "type": CLIENT_REGISTER,
+            "req_id": req_id,
+            "username": username,
+            # if we already have a server-assigned id, include it to "resume"
+            "client_id": getattr(self, "registered_id", None)
+        }
+        # avoid sending client_id: None
+        if msg["client_id"] is None:
+            msg.pop("client_id")
+
+        self.sock.settimeout(0.5)
+        end = time.time() + 1.5  # small window for redirect + reply
+
+        while time.time() < end:
+            try:
+                self.sock.sendto(json.dumps(msg).encode(), self.server_addr)
+                data, _ = self.sock.recvfrom(BUFFER_SIZE)
+                reply = json.loads(data.decode())
+                rtype = reply.get("type")
+
+                if rtype == CLIENT_REDIRECT:
+                    self.server_addr = (reply["leader_ip"], reply["leader_port"])
+                    print(f"[{self.client_id}] Redirected to leader for register: {self.server_addr}")
+                    continue
+
+                if rtype == CLIENT_REGISTERED:
+                    assigned = reply.get("client_id")
+                    if assigned:
+                        self.registered_id = assigned
+                    print(f"[{self.client_id}] Registered as {self.registered_id} with leader {reply.get('leader_id')}")
+                    return
+
+                # ignore unrelated packets
+            except socket.timeout:
+                break
+            except ConnectionResetError:
+                break
+
+        raise Exception("Registration failed (timeout/leader unreachable)")
+
+
+
 
     def flush_socket(self):
         self.sock.settimeout(0.0)
@@ -32,6 +86,9 @@ class Client:
         self.server_addr = self.get_leader_addr(any_server)
 
         self.flush_socket()
+        #immediately call register methong to register with a server on starting a client
+        self.register()   # increment A: just register once
+
 
         while True:
             text = input(">> ")
@@ -93,11 +150,16 @@ class Client:
 
     def send_chat(self, text):
         self.seq += 1
-        msg_id = f"{self.client_id}-{self.session_id}-{self.seq}"
+        # msg_id = f"{self.client_id}-{self.session_id}-{self.seq}"
+
+        sender = getattr(self, "registered_id", self.client_id)
+        msg_id = f"{sender}-{self.session_id}-{self.seq}"
+        ...
+
 
         msg = {
             "type": CHAT,
-            "sender_id": self.client_id,
+            "sender_id": sender,
             "msg_id": msg_id,
             "payload": text
         }

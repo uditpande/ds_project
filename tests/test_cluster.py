@@ -324,3 +324,103 @@ def test_stress_50_acks(servers):
     finally:
         sock.close()
 
+def send_register_follow_redirects(sock, port, req_id, username="udit", client_id=None, max_hops=5):
+    msg = {"type": "CLIENT_REGISTER", "req_id": req_id, "username": username, "client_id": client_id}
+    current_port = port
+
+    for _ in range(max_hops):
+        reply, _ = udp_request(sock, ("127.0.0.1", current_port), msg, timeout=1.0)
+        if reply is None:
+            return None
+
+        if reply.get("type") == "CLIENT_REGISTERED" and reply.get("req_id") == req_id:
+            return reply
+
+        if reply.get("type") == "CLIENT_REDIRECT":
+            current_port = reply.get("leader_port")
+            continue
+
+        return reply  # unexpected
+
+    return None
+
+def test_register_returns_client_id(servers):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        req_id = "R-1"
+        rep = send_register_follow_redirects(sock, 5001, req_id, username="udit", max_hops=8)
+
+        assert rep is not None, "No response to CLIENT_REGISTER"
+        assert rep.get("type") == "CLIENT_REGISTERED"
+        assert rep.get("req_id") == req_id
+        assert isinstance(rep.get("client_id"), str)
+        assert rep["client_id"] != ""
+        assert rep.get("leader_port") in PORTS
+    finally:
+        sock.close()
+
+def test_register_dedup_same_req_id_same_client_id(servers):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        req_id = "R-DEDUP-1"
+
+        rep1 = send_register_follow_redirects(sock, 5001, req_id, username="udit", max_hops=8)
+        rep2 = send_register_follow_redirects(sock, 5001, req_id, username="udit", max_hops=8)
+
+        assert rep1 is not None and rep1.get("type") == "CLIENT_REGISTERED"
+        assert rep2 is not None and rep2.get("type") == "CLIENT_REGISTERED"
+        assert rep1.get("client_id") == rep2.get("client_id")
+    finally:
+        sock.close()
+
+
+def test_register_resume_with_client_id(servers):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        rep1 = send_register_follow_redirects(sock, 5002, "R-RES-1", username="udit", max_hops=8)
+        assert rep1 is not None and rep1.get("type") == "CLIENT_REGISTERED"
+        cid = rep1["client_id"]
+
+        # "Resume" with same client_id but new req_id
+        rep2 = send_register_follow_redirects(sock, 5003, "R-RES-2", username="udit", client_id=cid, max_hops=8)
+        assert rep2 is not None and rep2.get("type") == "CLIENT_REGISTERED"
+        assert rep2.get("client_id") == cid
+    finally:
+        sock.close()
+
+
+def test_client_register_basic(servers):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        msg = {
+            "type": "CLIENT_REGISTER",
+            "req_id": "R-BASIC-1",
+            "username": "udit",
+            "client_id": None,
+        }
+
+        reply, _ = udp_request(sock, ("127.0.0.1", 5001), msg, timeout=1.0)
+
+        assert reply is not None, "No reply to CLIENT_REGISTER"
+        assert reply.get("type") in ("CLIENT_REGISTERED", "CLIENT_REDIRECT")
+    finally:
+        sock.close()
+
+
+def test_client_register_basic(servers):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        msg = {
+            "type": "CLIENT_REGISTER",
+            "req_id": "R-BASIC-1",
+            "username": "udit",
+            "client_id": None,
+        }
+
+        reply, _ = udp_request(sock, ("127.0.0.1", 5001), msg, timeout=1.0)
+
+        assert reply is not None, "No reply to CLIENT_REGISTER"
+        assert reply.get("type") in ("CLIENT_REGISTERED", "CLIENT_REDIRECT")
+    finally:
+        sock.close()
+

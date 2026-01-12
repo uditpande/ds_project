@@ -18,7 +18,9 @@ from common.config import (
     CLIENT_WHO_IS_LEADER,
     CLIENT_LEADER_INFO,
     CLIENT_REDIRECT,
-    CHAT_ACK
+    CHAT_ACK,
+    CLIENT_REGISTERED,
+    CLIENT_REGISTER
 )
 from server.election import ElectionManager
 
@@ -58,7 +60,30 @@ class Server:
         # deduplication of client chat messages (leader-side)
         self.seen_chat = {}  # sender_id -> set of msg_ids
 
+
+        # ---- client registration (leader authoritative) ----
+        self.clients = {}  # client_id -> {"username": str, "addr": (ip,port), "last_seen": float, "registered_at": float}
+        self.client_by_addr = {}  # (ip,port) -> client_id  (optional but useful)
+        self.seen_register = {}  # req_id -> reply_dict  (leader-side dedup cache)
+        self.next_client_num = 1
+        # ----------------------------------------------------
+
+
         print(f"[{self.server_id}] Server started on port {self.port}")
+
+    def leader_info(self):
+        leader_id = self.leader_id if self.leader_id is not None else self.server_id
+
+        if leader_id == self.server_id:
+            return {"leader_id": self.server_id, "leader_ip": "127.0.0.1", "leader_port": self.port}
+
+        if leader_id in self.members:
+            ip, port = self.member_addr(leader_id)
+            return {"leader_id": leader_id, "leader_ip": ip, "leader_port": port}
+
+        # fallback (startup edge)
+        return {"leader_id": self.server_id, "leader_ip": "127.0.0.1", "leader_port": self.port}
+
 
 
     # helper: normalize member values (supports old int-only format just in case)
@@ -220,9 +245,70 @@ class Server:
             }
             self.sock.sendto(json.dumps(reply).encode(), addr)
 
+        elif msg_type == CLIENT_REGISTER:
+            # If I'm not the leader, redirect (same pattern as CHAT)
+            if self.leader_id != self.server_id:
+                info = self.leader_info()
+                reply = {
+                    "type": CLIENT_REDIRECT,
+                    "leader_ip": info["leader_ip"],
+                    "leader_port": info["leader_port"],
+                }
+                # keep req_id if present (helps client dedup)
+                if "req_id" in msg:
+                    reply["req_id"] = msg["req_id"]
 
-        # elif msg_type == CHAT:
-        #     print(f"[{self.server_id}] CHAT from client: {msg['payload']}")
+                self.sock.sendto(json.dumps(reply).encode(), addr)
+                return
+
+            # ---- I am the leader ----
+            req_id = msg.get("req_id")
+            if req_id:
+                cached = self.seen_register.get(req_id)
+                if cached is not None:
+                    self.sock.sendto(json.dumps(cached).encode(), addr)
+                    return
+
+            username = msg.get("username", "").strip() or "anonymous"
+            now = time.time()
+
+            client_id = msg.get("client_id")
+            if client_id and client_id in self.clients:
+                # resume / re-register
+                self.clients[client_id]["username"] = username
+                self.clients[client_id]["addr"] = (addr[0], addr[1])
+                self.clients[client_id]["last_seen"] = now
+                self.client_by_addr[(addr[0], addr[1])] = client_id
+            else:
+                # new registration
+                client_id = f"C{self.next_client_num}"
+                self.next_client_num += 1
+                self.clients[client_id] = {
+                    "username": username,
+                    "addr": (addr[0], addr[1]),
+                    "registered_at": now,
+                    "last_seen": now,
+                }
+                self.client_by_addr[(addr[0], addr[1])] = client_id
+
+            info = self.leader_info()
+            reply = {
+                "type": CLIENT_REGISTERED,
+                "req_id": req_id,
+                "client_id": client_id,
+                "leader_id": info["leader_id"],
+                "leader_ip": info["leader_ip"],
+                "leader_port": info["leader_port"],
+            }
+
+            # store dedup reply (leader only)
+            if req_id:
+                self.seen_register[req_id] = reply
+
+            self.sock.sendto(json.dumps(reply).encode(), addr)
+            return
+
+
 
         elif msg_type == CHAT:
             # Only leader should accept chat
