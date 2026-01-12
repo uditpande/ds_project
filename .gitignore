@@ -16,3 +16,7 @@ venv/
 
 # OS
 .DS_Store
+<<<<<<< HEAD
+=======
+.idea/
+>>>>>>> feature/leader-broadcast
