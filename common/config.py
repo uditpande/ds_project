@@ -1,4 +1,5 @@
 BUFFER_SIZE = 4096
+DISCOVERY_PORT = 5000
 
 # Message types
 HELLO = "HELLO"

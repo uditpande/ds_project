@@ -10,16 +10,16 @@ import queue
 from common.config import (
     BUFFER_SIZE,
     CHAT,
-    CLIENT_REDIRECT,
     CHAT_ACK,
     CLIENT_REGISTER,
     CLIENT_REGISTERED,
     CHAT_DELIVER,
     DISCOVER_SERVER,
     SERVER_INFO,
+    DISCOVERY_PORT,
 )
 
-DISCOVERY_PORTS = [5001, 5002, 5003]  # known range
+#DISCOVERY_PORTS = [5001, 5002, 5003]  # known range
 
 
 class Client:
@@ -72,36 +72,68 @@ class Client:
                 continue
 
     def discover_server(self):
+        # Enable broadcast on this socket (safe to call multiple times)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        nonce = uuid.uuid4().hex
         discovery_msg = {
             "type": DISCOVER_SERVER,
-            "sender_id": self.client_id
+            "nonce": nonce,
+            "client_id": self.client_id,   # (server may ignore; fine)
         }
 
-        for port in DISCOVERY_PORTS:
-            self.sock.sendto(json.dumps(discovery_msg).encode(), ("127.0.0.1", port))
+        # Broadcast once to DISCOVERY_PORT
+        self.sock.sendto(json.dumps(discovery_msg).encode(), ("255.255.255.255", DISCOVERY_PORT))
 
         # NOTE: discover_server runs before recv_loop starts, so it can safely recvfrom itself.
-        self.sock.settimeout(0.3)
-        servers = []
+        self.sock.settimeout(0.1)
+        servers = {}
 
-        start = time.time()
-        while time.time() - start < 0.3:
+        deadline = time.time() + 0.8
+        while time.time() < deadline:
             try:
                 data, _ = self.sock.recvfrom(BUFFER_SIZE)
-                reply = json.loads(data.decode())
-                if reply.get("type") == SERVER_INFO:
-                    servers.append(reply)
             except socket.timeout:
-                break
+                continue
             except ConnectionResetError:
                 continue
 
+            try:
+                reply = json.loads(data.decode())
+            except Exception:
+                continue
+
+            if reply.get("type") != SERVER_INFO:
+                continue
+            if reply.get("nonce") != nonce:
+                continue
+
+            sid = reply.get("server_id")
+            ip = reply.get("ip", "127.0.0.1")
+            port = reply.get("port")
+
+            if sid is None or port is None:
+                continue
+
+            servers[(sid, ip, port)] = reply
+
         if not servers:
             raise Exception("No servers found")
+        
+        # Prefer leader if present
+        unique_servers = list(servers.values())
 
-        chosen = random.choice(servers)
-        print(f"[{self.client_id}] Discovered server {chosen['server_id']} on port {chosen['port']}")
-        return ("127.0.0.1", chosen["port"])
+        leaders = [s for s in unique_servers if s.get("is_leader")]
+        chosen = random.choice(leaders) if leaders else random.choice(unique_servers)
+        ip = chosen.get("ip", "127.0.0.1")
+        port = int(chosen["port"])
+
+        print(
+            f"[{self.client_id}] Discovered server {chosen.get('server_id')} "
+            f"at {ip}:{port} "
+            f"(leader={chosen.get('is_leader')}, leader_id={chosen.get('leader_id')})"
+        )
+        
+        return (ip, port)
 
     def register(self):
         msg = {
@@ -122,12 +154,19 @@ class Client:
 
             rtype = reply.get("type")
 
-            if rtype == CLIENT_REDIRECT:
+            '''if rtype == CLIENT_REDIRECT:
                 # transitional behavior: server still may redirect to leader
-                self.server_addr = (reply["leader_ip"], reply["leader_port"])
-                print(f"[{self.client_id}] Redirected during register to {self.server_addr}")
+                print(f"[{self.client_id}] Redirect received; re-discovering leader via broadcast...")
+                self.flush_socket()
+                try:
+                    self.server_addr = self.discover_server()  # prefers leader if present
+                except Exception:
+                    # fallback to the redirect target if discovery fails
+                    self.server_addr = (reply["leader_ip"], reply["leader_port"])
+
+                print(f"[{self.client_id}] Now using {self.server_addr}")
                 self.sock.sendto(json.dumps(msg).encode(), self.server_addr)
-                continue
+                continue'''
 
             if rtype == CLIENT_REGISTERED:
                 self.registered_id = reply.get("client_id") or self.client_id
@@ -162,12 +201,19 @@ class Client:
 
             rtype = reply.get("type")
 
-            if rtype == CLIENT_REDIRECT:
+            '''if rtype == CLIENT_REDIRECT:
                 # transitional behavior: server still may redirect to leader
-                self.server_addr = (reply["leader_ip"], reply["leader_port"])
-                print(f"[{self.client_id}] Redirected to {self.server_addr}")
+                print(f"[{self.client_id}] Redirect received; re-discovering leader via broadcast...")
+                self.flush_socket()
+                try:
+                    self.server_addr = self.discover_server()  # prefers leader if present
+                except Exception:
+                    # fallback to the redirect target if discovery fails
+                    self.server_addr = (reply["leader_ip"], reply["leader_port"])
+
+                print(f"[{self.client_id}] Now using {self.server_addr}")
                 self.sock.sendto(json.dumps(msg).encode(), self.server_addr)
-                continue
+                continue'''
 
             if rtype == CHAT_ACK and reply.get("msg_id") == msg_id:
                 print(f"[{self.client_id}] got ACK for {msg_id}")
@@ -177,10 +223,9 @@ class Client:
 
         # If we got here, the entry server is likely unreachable
         print(f"[{self.client_id}] Server unreachable, rediscovering entry server...")
+        self.flush_socket()
         self.server_addr = self.discover_server()
         print(f"[{self.client_id}] New entry server {self.server_addr}")
-
-        self.flush_socket()
         self.register()
 
         # retry once

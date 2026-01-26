@@ -61,6 +61,7 @@ class HeartbeatManager:
             # Suspect leader failed
             self.server.last_election_time = now
             self.server.leader_id = None
+            self.server.multicast.on_leader_changed()
             print(f"[{self.server.server_id}] Leader heartbeat timeout. Starting election...")
             self.server.election.start_election()
 

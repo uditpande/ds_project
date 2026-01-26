@@ -4,6 +4,8 @@ import sys
 import time
 import uuid  # NEW
 
+from server.broadcast import BroadcastChannel
+
 from server.heartbeat import HeartbeatManager
 from common.config import (
     BUFFER_SIZE,
@@ -18,7 +20,6 @@ from common.config import (
     HEARTBEAT,
     CLIENT_WHO_IS_LEADER,
     CLIENT_LEADER_INFO,
-    CLIENT_REDIRECT,
     CHAT_ACK,
     CLIENT_REGISTERED,
     CLIENT_REGISTER,
@@ -29,9 +30,10 @@ from common.config import (
     CHAT_DELIVER,
 )
 from server.election import ElectionManager
+from server.multicast import MulticastManager
 
 
-SERVER_PORTS = [5001, 5002, 5003, 5004, 5005]  # will replace by broadcast later
+#SERVER_PORTS = [5001, 5002, 5003, 5004, 5005]  # will replace by broadcast later
 
 
 class Server:
@@ -44,7 +46,7 @@ class Server:
 
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind(("0.0.0.0", self.port))
-
+        
         self.leader_id = None
         self.election = ElectionManager(self)
         self.heartbeat = HeartbeatManager(self)
@@ -65,6 +67,9 @@ class Server:
         # NEW: pending registrations (entry server)
         # req_id -> client_addr (ip,port)
         self.pending_registers = {}
+
+        self.broadcast = BroadcastChannel()
+        self.multicast = MulticastManager(self)
 
         print(f"[{self.server_id}] Server started on port {self.port}")
 
@@ -87,7 +92,7 @@ class Server:
         return ("127.0.0.1", v)
 
     def send_hello(self):
-        hello_msg = {"type": HELLO, "server_id": self.server_id, "port": self.port}
+        '''hello_msg = {"type": HELLO, "server_id": self.server_id, "port": self.port}
         data = json.dumps(hello_msg).encode()
 
         for p in SERVER_PORTS:
@@ -100,11 +105,28 @@ class Server:
             try:
                 self.sock.sendto(data, (ip, port))
             except OSError:
-                pass
+                pass'''
+        # Broadcast hello( server discovery)
+        hello_msg = { 
+            "type": HELLO,
+            "nonce": uuid.uuid4().hex,
+            "server_id": self.server_id,
+            "ip": "127.0.0.1",
+            "port": self.port,
+        }
+        self.last_hello_nonce = hello_msg["nonce"]
+        self.broadcast.send_broadcast(hello_msg)
 
     def listen(self):
         self.send_hello()
         time.sleep(0.3)
+        
+        end = time.time() + 0.2
+        while time.time() < end:
+            bmsg, baddr = self.broadcast.try_recv()
+            if not bmsg:
+                break
+            self.handle_message(bmsg, baddr)
 
         self.election.start_election()
         self.sock.settimeout(0.1)
@@ -112,11 +134,19 @@ class Server:
         while True:
             self.election.tick()
             self.heartbeat.tick()
+            self.multicast.tick()
 
             now = time.time()
             if now - self.last_hello_sent >= self.hello_interval:
                 self.send_hello()
                 self.last_hello_sent = now
+
+            # Poll broadcast channel (DISCOVER_SERVER, HELLO) - drain all pending packets
+            while True:
+                bmsg, baddr = self.broadcast.try_recv()
+                if not bmsg:
+                    break
+                self.handle_message(bmsg, baddr)
 
             try:
                 data, addr = self.sock.recvfrom(BUFFER_SIZE)
@@ -140,8 +170,8 @@ class Server:
             except OSError:
                 pass
 
-    def _broadcast_chat_to_servers(self, from_id: str, payload: str, msg_id: str):
-        bcast = {"type": CHAT_BCAST, "from": from_id, "payload": payload, "msg_id": msg_id}
+    def _replicate_chat_multicast(self, from_id: str, payload: str, msg_id: str):
+        '''bcast = {"type": CHAT_BCAST, "from": from_id, "payload": payload, "msg_id": msg_id}
         data = json.dumps(bcast).encode()
 
         self._deliver_to_local_clients(from_id, payload, msg_id)
@@ -152,25 +182,31 @@ class Server:
             try:
                 self.sock.sendto(data, (ip, port))
             except OSError:
-                pass
+                pass'''
+        # Leader-sequenced reliable ordered replication via multicast.py
+        # IMPORTANT: do NOT deliver locally here; delivery happens via multicast in-order delivery.
+        if self.leader_id != self.server_id:
+            return
+
+        self.multicast.multicast_chat(from_id, payload, msg_id)
 
     def handle_message(self, msg, addr):
+        if self.multicast.on_message(msg, addr):
+            return
         msg_type = msg.get("type")
 
         if msg_type == HELLO:
-            if msg["server_id"] == self.server_id:
-                key = (msg["server_id"], addr[0], msg.get("port"))
-                if key not in self.seen_dup_sources:
-                    print(
-                        f"[{self.server_id}] ERROR: Duplicate server ID '{msg['server_id']}' from "
-                        f"{addr[0]}:{msg.get('port')}. Ignoring."
-                    )
-                    self.seen_dup_sources.add(key)
+            sender_id = msg.get("server_id")
+            sender_port = msg.get("port")
+
+            if sender_id is None or sender_port is None:
                 return
 
-            sender_id = msg["server_id"]
-            sender_port = msg["port"]
-            sender_ip = addr[0]
+            # ignore our own broadcast HELLO
+            if sender_id == self.server_id:
+                return
+            
+            sender_ip = msg.get("ip") or addr[0]
 
             if sender_id in self.members and self.members[sender_id] != (sender_ip, sender_port):
                 key = (sender_id, sender_ip, sender_port)
@@ -191,13 +227,28 @@ class Server:
 
             self.maybe_start_election(newly_seen_id=sender_id)
 
-            reply = {"type": HELLO_REPLY, "server_id": self.server_id, "port": self.port}
-            self.sock.sendto(json.dumps(reply).encode(), addr)
+            '''reply = {"type": HELLO_REPLY, "server_id": self.server_id, "port": self.port}
+            self.sock.sendto(json.dumps(reply).encode(), addr)'''
+
+            #Reply unicast (to sender's broadcast source addr/port)
+            reply = {
+                "type": HELLO_REPLY,
+                "nonce": msg.get("nonce"),
+                "server_id": self.server_id,
+                "ip":"127.0.0.1",
+                "port":self.port,
+                "leader_id": self.leader_id if self.leader_id is not None else self.server_id,
+            }
+            self.broadcast.send_unicast(reply, addr)
 
         elif msg_type == HELLO_REPLY:
-            sender_id = msg["server_id"]
-            sender_port = msg["port"]
-            sender_ip = addr[0]
+            if msg.get("nonce") != getattr(self, "last_hello_nonce", None):
+                return
+            sender_id = msg.get("server_id")
+            sender_port = msg.get("port")
+            if sender_id is None or sender_port is None:
+                return
+            sender_ip = msg.get("ip") or addr[0]
 
             if sender_id in self.members and self.members[sender_id] != (sender_ip, sender_port):
                 key = (sender_id, sender_ip, sender_port)
@@ -215,7 +266,7 @@ class Server:
             if is_new:
                 print(f"[{self.server_id}] Added server {sender_id}")
                 print(f"[{self.server_id}] Members: {self.members}")
-
+            
             self.maybe_start_election(newly_seen_id=sender_id)
 
         elif msg_type == CLIENT_WHO_IS_LEADER:
@@ -364,18 +415,13 @@ class Server:
                 self.sock.sendto(json.dumps({"type": CHAT_ACK, "msg_id": msg_id}).encode(), addr)
 
                 if sender and payload is not None and msg_id:
-                    self._broadcast_chat_to_servers(sender, payload, msg_id)
+                    self._replicate_chat_multicast(sender, payload, msg_id)
                 return
 
             info = self.leader_info()
             leader_addr = (info["leader_ip"], info["leader_port"])
 
             if not msg_id:
-                self.sock.sendto(json.dumps({
-                    "type": CLIENT_REDIRECT,
-                    "leader_ip": leader_addr[0],
-                    "leader_port": leader_addr[1],
-                }).encode(), addr)
                 return
 
             self.pending_chat_acks[msg_id] = (addr[0], addr[1])
@@ -415,7 +461,7 @@ class Server:
                                  self.member_addr(origin))
 
             if sender and payload is not None and msg_id:
-                self._broadcast_chat_to_servers(sender, payload, msg_id)
+                self._replicate_chat_multicast(sender, payload, msg_id)
             return
 
         elif msg_type == CHAT_ACK_FWD:
@@ -428,17 +474,28 @@ class Server:
             return
 
         elif msg_type == CHAT_BCAST:
-            from_id = msg.get("from")
+            '''from_id = msg.get("from")
             payload = msg.get("payload")
             msg_id = msg.get("msg_id")
             if from_id is not None and payload is not None:
-                self._deliver_to_local_clients(from_id, payload, msg_id)
+                self._deliver_to_local_clients(from_id, payload, msg_id)'''
             return
         # ---------------------------------------------------
 
         elif msg_type == DISCOVER_SERVER:
-            reply = {"type": SERVER_INFO, "server_id": self.server_id, "port": self.port}
-            self.sock.sendto(json.dumps(reply).encode(), addr)
+            '''reply = {"type": SERVER_INFO, "server_id": self.server_id, "port": self.port}
+            self.sock.sendto(json.dumps(reply).encode(), addr)'''
+            # Client broadcast DISCOVER_SERVER -> unicast SERVER_INFO back
+            reply = {
+                "type": SERVER_INFO,
+                "nonce": msg.get("nonce"),
+                "server_id": self.server_id,
+                "ip": "127.0.0.1",
+                "port": self.port,
+                "leader_id": self.leader_id if self.leader_id is not None else self.server_id,
+                "is_leader": (self.leader_id == self.server_id) if self.leader_id is not None else True,
+            }
+            self.broadcast.send_unicast(reply, addr)
 
         elif msg_type == ELECTION:
             self.election.on_election(msg, addr)
@@ -464,6 +521,13 @@ class Server:
         self.leader_id = leader_id
         print(f"[{self.server_id}] Leader is now {self.leader_id}")
         self.heartbeat.on_leader_changed()
+
+        # reset multicast epoch/seq state on leader change
+        self.multicast.on_leader_changed()
+
+        # NEW: followers auto-sync from the leader after leader change
+        if self.leader_id != self.server_id:
+            self.multicast.request_sync()
 
     def maybe_start_election(self, newly_seen_id=None):
         now = time.time()
