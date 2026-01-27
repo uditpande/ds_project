@@ -17,6 +17,8 @@ from common.config import (
     DISCOVER_SERVER,
     SERVER_INFO,
     DISCOVERY_PORT,
+    BROADCAST_ADDR,
+    BIND_ADDR,
 )
 
 #DISCOVERY_PORTS = [5001, 5002, 5003]  # known range
@@ -26,6 +28,7 @@ class Client:
     def __init__(self, client_id):
         self.client_id = client_id
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind((BIND_ADDR, 0))
         self.seq = 0
         self.session_id = uuid.uuid4().hex[:6]
         self.server_addr = None
@@ -82,7 +85,7 @@ class Client:
         }
 
         # Broadcast once to DISCOVERY_PORT
-        self.sock.sendto(json.dumps(discovery_msg).encode(), ("255.255.255.255", DISCOVERY_PORT))
+        self.sock.sendto(json.dumps(discovery_msg).encode(), (BROADCAST_ADDR, DISCOVERY_PORT))
 
         # NOTE: discover_server runs before recv_loop starts, so it can safely recvfrom itself.
         self.sock.settimeout(0.1)
@@ -91,7 +94,7 @@ class Client:
         deadline = time.time() + 0.8
         while time.time() < deadline:
             try:
-                data, _ = self.sock.recvfrom(BUFFER_SIZE)
+                data, addr = self.sock.recvfrom(BUFFER_SIZE)
             except socket.timeout:
                 continue
             except ConnectionResetError:
@@ -108,13 +111,15 @@ class Client:
                 continue
 
             sid = reply.get("server_id")
-            ip = reply.get("ip", "127.0.0.1")
             port = reply.get("port")
 
             if sid is None or port is None:
                 continue
+            
+            # Fallback to the sender's IP (addr[0]) instead of 127.0.0.1
+            ip = reply.get("ip") or addr[0]
 
-            servers[(sid, ip, port)] = reply
+            servers[(sid, ip, int(port))] = reply
 
         if not servers:
             raise Exception("No servers found")
@@ -124,8 +129,13 @@ class Client:
 
         leaders = [s for s in unique_servers if s.get("is_leader")]
         chosen = random.choice(leaders) if leaders else random.choice(unique_servers)
-        ip = chosen.get("ip", "127.0.0.1")
-        port = int(chosen["port"])
+        ip = chosen.get("ip")
+        port = chosen.get("port")
+
+        if ip is None or port is None:
+            (sid, ip, port) = next(iter(servers.keys()))
+        else:
+            port = int(port)
 
         print(
             f"[{self.client_id}] Discovered server {chosen.get('server_id')} "
@@ -153,20 +163,6 @@ class Client:
                 continue
 
             rtype = reply.get("type")
-
-            '''if rtype == CLIENT_REDIRECT:
-                # transitional behavior: server still may redirect to leader
-                print(f"[{self.client_id}] Redirect received; re-discovering leader via broadcast...")
-                self.flush_socket()
-                try:
-                    self.server_addr = self.discover_server()  # prefers leader if present
-                except Exception:
-                    # fallback to the redirect target if discovery fails
-                    self.server_addr = (reply["leader_ip"], reply["leader_port"])
-
-                print(f"[{self.client_id}] Now using {self.server_addr}")
-                self.sock.sendto(json.dumps(msg).encode(), self.server_addr)
-                continue'''
 
             if rtype == CLIENT_REGISTERED:
                 self.registered_id = reply.get("client_id") or self.client_id
@@ -200,20 +196,6 @@ class Client:
                 continue
 
             rtype = reply.get("type")
-
-            '''if rtype == CLIENT_REDIRECT:
-                # transitional behavior: server still may redirect to leader
-                print(f"[{self.client_id}] Redirect received; re-discovering leader via broadcast...")
-                self.flush_socket()
-                try:
-                    self.server_addr = self.discover_server()  # prefers leader if present
-                except Exception:
-                    # fallback to the redirect target if discovery fails
-                    self.server_addr = (reply["leader_ip"], reply["leader_port"])
-
-                print(f"[{self.client_id}] Now using {self.server_addr}")
-                self.sock.sendto(json.dumps(msg).encode(), self.server_addr)
-                continue'''
 
             if rtype == CHAT_ACK and reply.get("msg_id") == msg_id:
                 print(f"[{self.client_id}] got ACK for {msg_id}")

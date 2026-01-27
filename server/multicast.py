@@ -117,7 +117,7 @@ class MulticastManager:
         }
 
         self._log.append(packet)
-        self._accept_data(packet, ("127.0.0.1", self.server.port), is_self=True)
+        self._accept_data(packet, (self.server.my_ip, self.server.port), is_self=True)
         if len(self._log) > 1000:
             self._log.pop(0) #prevents memory growth during long tests
         self._pending[msg_key] = _Pending(packet, set(), 0.0, 0)
@@ -143,9 +143,10 @@ class MulticastManager:
 
     def _member_addrs(self):
         addrs = []
-        for sid, v in self.server.members.items():
-            if sid != self.server.server_id:
-                addrs.append(v if isinstance(v, tuple) else ("127.0.0.1", int(v)))
+        for sid in self.server.members:
+            if sid == self.server.server_id:
+                continue
+            addrs.append(self.server.member_addr(sid))
         return addrs
 
     def _send_to_all(self, packet):

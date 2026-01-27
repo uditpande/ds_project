@@ -12,12 +12,13 @@ class BroadcastChannel:
         # Receiver socket (servers bind same port)
         self.rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.rx.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.rx.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         if hasattr(socket, "SO_REUSEPORT"):
             try:
                 self.rx.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
             except OSError:
                 pass
-        self.rx.bind(("", DISCOVERY_PORT))
+        self.rx.bind(("0.0.0.0", DISCOVERY_PORT))
         self.rx.setblocking(False)
 
         # Sender socket
