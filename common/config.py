@@ -27,6 +27,11 @@ CLIENT_REGISTER = "CLIENT_REGISTER"
 CLIENT_REGISTERED = "CLIENT_REGISTERED"
 REGISTER_FWD = "REGISTER_FWD"
 
+#Client side heart beat
+CLIENT_PING = "CLIENT_PING"
+CLIENT_PONG = "CLIENT_PONG"
+
+
 # Chat flow
 CHAT_ACK = "CHAT_ACK"
 CHAT_FWD = "CHAT_FWD"
@@ -34,19 +39,5 @@ CHAT_ACK_FWD = "CHAT_ACK_FWD"
 CHAT_BCAST = "CHAT_BCAST"
 CHAT_DELIVER = "CHAT_DELIVER"
 
-# ==============================
-# Syslog / Wireshark observability
-# ==============================
 
-SYSLOG_ENABLED = True
 
-# IP address of the machine running Wireshark
-# If Wireshark is on the same machine, keep 127.0.0.1
-SYSLOG_HOST = "127.0.0.1"
-
-# UDP port used only for syslog-style event packets
-SYSLOG_PORT = 5514
-
-# Syslog metadata (for RFC-style header)
-SYSLOG_FACILITY = 16   # local0
-SYSLOG_SEVERITY = 6    # info

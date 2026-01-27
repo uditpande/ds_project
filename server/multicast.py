@@ -141,6 +141,8 @@ class MulticastManager:
             return True
         return False
 
+
+
     def _member_addrs(self):
         addrs = []
         for sid in self.server.members:
