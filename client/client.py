@@ -128,7 +128,7 @@ class Client:
         unique_servers = list(servers.values())
 
         leaders = [s for s in unique_servers if s.get("is_leader")]
-        chosen = random.choice(leaders) if leaders else random.choice(unique_servers)
+        chosen = random.choice(unique_servers)
         ip = chosen.get("ip")
         port = chosen.get("port")
 
@@ -137,11 +137,14 @@ class Client:
         else:
             port = int(port)
 
-        print(
+        '''print(
             f"[{self.client_id}] Discovered server {chosen.get('server_id')} "
             f"at {ip}:{port} "
             f"(leader={chosen.get('is_leader')}, leader_id={chosen.get('leader_id')})"
-        )
+        )'''
+
+        print(f"[{self.client_id}] Entry server {chosen.get('server_id')} at {ip}:{port} "
+        f"(cluster_leader_id={chosen.get('leader_id')}, entry_is_leader={chosen.get('is_leader')})")
         
         return (ip, port)
 
