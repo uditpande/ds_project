@@ -1,6 +1,7 @@
 import json
 import time
 from common.config import ELECTION, ELECTION_OK, COORDINATOR
+from common.syslog import LOG_WARN, LOG_INFO
 
 
 def server_priority(server_id: str) -> int:
@@ -30,6 +31,13 @@ class ElectionManager:
     def start_election(self):
         if self.in_election:
             return
+        
+        LOG_WARN(
+            "ELECTION_START",
+            server_id=self.server.server_id,
+            event="ELECTION_START",
+            members_count=len(self.server.members),
+        )
 
         self.in_election = True
         self.got_ok = False
@@ -49,6 +57,11 @@ class ElectionManager:
 
         if not higher:
             # nobody higher -> the current server becomes the leader
+            LOG_INFO(
+                "ELECTION_NO_HIGHER",
+                server_id=self.server.server_id,
+                event="ELECTION_NO_HIGHER",
+            )
             self.become_leader()
             return
 
@@ -57,6 +70,13 @@ class ElectionManager:
         data = json.dumps(msg).encode()
 
         for sid, ip, port in higher:
+            LOG_INFO(
+                "ELECTION_SEND",
+                server_id=self.server.server_id,
+                event="ELECTION_SEND",
+                peer_id=sid,
+                addr=f"{ip}:{port}",
+            )
             self.server.sock.sendto(data, (ip, port))
 
         # wait for OK (phase 1)
@@ -92,6 +112,13 @@ class ElectionManager:
 
         # Reply OK if I'm higher
         if server_priority(self.server.server_id) > server_priority(sender_id):
+            LOG_INFO(
+                "ELECTION_OK_SENT",
+                server_id=self.server.server_id,
+                event="ELECTION_OK_SENT",
+                peer_id=sender_id,
+                addr=f"{addr[0]}:{addr[1]}",
+            )
             ok = {"type": ELECTION_OK, "server_id": self.server.server_id}
             self.server.sock.sendto(json.dumps(ok).encode(), addr)
 
@@ -103,6 +130,13 @@ class ElectionManager:
         if not self.in_election:
             return
 
+        LOG_INFO(
+            "ELECTION_OK_RECEIVED",
+            server_id=self.server.server_id,
+            event="ELECTION_OK_RECEIVED",
+            from_id=msg.get("server_id"),
+            addr=f"{addr[0]}:{addr[1]}",
+        )
         self.got_ok = True
         # IMPORTANT: do NOT extend deadlines here; just record got_ok.
         # We keep waiting until ok_deadline and then move to waiting_coord.
@@ -115,10 +149,26 @@ class ElectionManager:
         self.got_ok = False
         self.waiting_coord = False
 
+        LOG_INFO(
+            "ELECTION_COORDINATOR_RECEIVED",
+            server_id=self.server.server_id,
+            event="ELECTION_COORDINATOR_RECEIVED",
+            leader_id=leader_id,
+            addr=f"{addr[0]}:{addr[1]}",
+        )
+
         self.server.set_leader(leader_id)
 
     def become_leader(self):
+
         leader_id = self.server.server_id
+
+        LOG_INFO(
+            "ELECTION_WIN",
+            server_id=self.server.server_id,
+            event="ELECTION_WIN",
+            leader_id=leader_id,
+        )
 
         self.in_election = False
         self.waiting_ok = False
@@ -135,4 +185,12 @@ class ElectionManager:
             if sid == self.server.server_id:
                 continue
             ip, port = addr
+            LOG_INFO(
+                "ELECTION_COORDINATOR_SENT",
+                server_id=self.server.server_id,
+                event="ELECTION_COORDINATOR_SENT",
+                peer_id=sid,
+                addr=f"{ip}:{port}",
+            )
+
             self.server.sock.sendto(data, (ip, port))

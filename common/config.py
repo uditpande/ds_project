@@ -39,5 +39,18 @@ CHAT_ACK_FWD = "CHAT_ACK_FWD"
 CHAT_BCAST = "CHAT_BCAST"
 CHAT_DELIVER = "CHAT_DELIVER"
 
+# ==============================
+# Syslog / Wireshark observability
+# ==============================
 
+SYSLOG_ENABLED = True
 
+# IP address of the machine running Wireshark
+# If Wireshark is on the same machine, keep 127.0.0.1
+SYSLOG_HOST = "127.0.0.1"
+
+# UDP port used only for syslog-style event packets
+SYSLOG_PORT = 5514
+
+# Syslog metadata (for RFC-style header)
+SYSLOG_FACILITY = 16   # local0

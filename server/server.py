@@ -32,6 +32,7 @@ from common.config import (
 )
 from server.election import ElectionManager
 from server.multicast import MulticastManager
+from common.syslog import LOG_INFO, LOG_WARN, LOG_ERROR
 
 
 # Helper to get the machine's LAN IP (so other devices can reach it)
@@ -84,6 +85,15 @@ class Server:
         self.broadcast = BroadcastChannel()
         self.multicast = MulticastManager(self)
 
+        LOG_INFO(
+            "SERVER_STARTED",
+            server_id=self.server_id,
+            event="SERVER_STARTED",
+            leader_id=self.leader_id,
+            addr=f"{self.my_ip}:{self.port}",
+            members_count=len(self.members),
+        )
+
         print(f"[{self.server_id}] Server started on {self.my_ip}:{self.port}")
 
     def leader_info(self):
@@ -123,7 +133,24 @@ class Server:
         self.last_hello_nonce = hello_msg["nonce"]
         self.broadcast.send_broadcast(hello_msg)
 
+        LOG_INFO(
+            "SV_HELLO_SENT",
+            server_id = self.server_id,
+            event = "SV_HELLO_SENT",
+            leader_id = self.leader_id,
+            nonce = hello_msg["nonce"],
+            addr = "255.255.255.255",
+            )
+
     def listen(self):
+
+        LOG_INFO(
+            "SV_LISTEN_START",
+            server_id = self.server_id,
+            event = "SV_LISTEN_START",
+            leader_id = self.leader_id,
+        )
+
         self.send_hello()
         time.sleep(0.3)
 
@@ -133,6 +160,14 @@ class Server:
             if not bmsg:
                 break
             self.handle_message(bmsg, baddr)
+
+        LOG_INFO(
+            "ELection_STARTUP_TRIGGER",
+            server_id=self.server_id,
+            event="ELection_STARTUP_TRIGGER",
+            leader_id=self.leader_id,
+            members_count=len(self.members),
+        )
 
         self.election.start_election()
         self.sock.settimeout(0.2)  # slightly calmer on Windows
@@ -159,9 +194,26 @@ class Server:
             except (socket.timeout, TimeoutError):
                 continue
             except ConnectionResetError:
+                LOG_WARN(
+                    "SV_RECV_CONNRESET",
+                    server_id=self.server_id,
+                    event="SV_RECV_CONNRESET",
+                    leader_id=self.leader_id,
+                )
                 continue
 
-            msg = json.loads(data.decode())
+            try:
+                msg = json.loads(data.decode())
+            except Exception:
+                LOG_WARN(
+                    "SV_BAD_JSON",
+                    server_id=self.server_id,
+                    event="SV_BAD_JSON",
+                    leader_id=self.leader_id,
+                    addr=f"{addr[0]}:{addr[1]}",
+                )
+                continue
+
             self.handle_message(msg, addr)
 
     def _deliver_to_local_clients(self, from_id: str, payload: str, msg_id: str = None):
@@ -169,6 +221,16 @@ class Server:
         if msg_id:
             deliver["msg_id"] = msg_id
         data = json.dumps(deliver).encode()
+
+        LOG_INFO(
+            "CLIENT_DELIVER_LOCAL",
+            server_id=self.server_id,
+            event="CLIENT_DELIVER_LOCAL",
+            leader_id=self.leader_id,
+            msg_id=msg_id,
+            from_id=from_id,
+            local_clients=len(self.local_clients),
+        )
 
         for _, caddr in list(self.local_clients.items()):
             try:
@@ -181,6 +243,16 @@ class Server:
         # IMPORTANT: do NOT deliver locally here; delivery happens via multicast in-order delivery.
         if self.leader_id != self.server_id:
             return
+        
+        LOG_INFO(
+            "MULTICAST_REPLICATION_REQUEST",
+            server_id=self.server_id,
+            event="MULTICAST_REPLICATION_REQUEST",
+            leader_id=self.leader_id,
+            msg_id=msg_id,
+            from_id=from_id,
+        )
+
         self.multicast.multicast_chat(from_id, payload, msg_id)
 
     def handle_message(self, msg, addr):
@@ -198,13 +270,37 @@ class Server:
 
             # ignore our own broadcast HELLO
             if sender_id == self.server_id:
+                LOG_INFO(
+                    "SERVER_HELLO_SELF_IGNORED",
+                    server_id=self.server_id,
+                    event="SERVER_HELLO_SELF_IGNORED",
+                    nonce=msg.get("nonce"),
+                )
                 return
 
             sender_ip = msg.get("ip") or addr[0]
 
+            LOG_INFO(
+                "SERVER_HELLO_RECEIVED",
+                server_id=self.server_id,
+                event="SERVER_HELLO_RECEIVED",
+                peer_id=sender_id,
+                addr=f"{sender_ip}:{sender_port}",
+                nonce=msg.get("nonce"),
+                leader_id=self.leader_id,
+            )
+
             if sender_id in self.members and self.members[sender_id] != (sender_ip, sender_port):
                 key = (sender_id, sender_ip, sender_port)
                 if key not in self.seen_dup_sources:
+                    LOG_ERROR(
+                        "DUPLICATE_SERVER_ID",
+                        server_id=self.server_id,
+                        event="DUPLICATE_SERVER_ID",
+                        addr=f"{sender_ip}:{sender_port}",
+                        dup_server_id=sender_id,
+                        existing=str(self.members.get(sender_id)),
+                    )
                     print(
                         f"[{self.server_id}] ERROR: Duplicate server ID '{sender_id}' from "
                         f"{sender_ip}:{sender_port}. Existing is {self.members[sender_id]}. Ignoring."
@@ -216,8 +312,26 @@ class Server:
             self.members[sender_id] = (sender_ip, sender_port)
 
             if is_new:
+                LOG_INFO(
+                    "SERVER_DISCOVERED",
+                    server_id=self.server_id,
+                    event="SERVER_DISCOVERED",
+                    peer_id=sender_id,
+                    addr=f"{sender_ip}:{sender_port}",
+                    members_count=len(self.members),
+                )
                 print(f"[{self.server_id}] Discovered server {sender_id}")
                 print(f"[{self.server_id}] Members: {self.members}")
+
+            else:
+                LOG_INFO(
+                    "SERVER_MEMBER_UPDATED",
+                    server_id=self.server_id,
+                    event="SERVER_MEMBER_UPDATED",
+                    peer_id=sender_id,
+                    addr=f"{sender_ip}:{sender_port}",
+                    members_count=len(self.members),
+                )
 
             self.maybe_start_election(newly_seen_id=sender_id)
 
@@ -230,20 +344,58 @@ class Server:
                 "port": self.port,
                 "leader_id": self.leader_id,  # can be None
             }
+
+            LOG_INFO(
+                "SV_HELLO_REPLY_SENT",
+                server_id=self.server_id,
+                event="SV_HELLO_REPLY_SENT",
+                peer_id=sender_id,
+                addr=f"{addr[0]}:{addr[1]}",
+                nonce=reply.get("nonce"),
+                leader_id=self.leader_id,
+                )
+            
             self.broadcast.send_unicast(reply, addr)
 
         elif msg_type == HELLO_REPLY:
             if msg.get("nonce") != getattr(self, "last_hello_nonce", None):
+                LOG_WARN(
+                    "SV_HELLO_REPLY_NONCE_MISMATCH",
+                    server_id=self.server_id,
+                    event="SV_HELLO_REPLY_NONCE_MISMATCH",
+                    leader_id=self.leader_id,
+                    nonce=msg.get("nonce"),
+                )
                 return
+            
             sender_id = msg.get("server_id")
             sender_port = msg.get("port")
             if sender_id is None or sender_port is None:
                 return
             sender_ip = msg.get("ip") or addr[0]
 
+            LOG_INFO(
+                "SV_HELLO_REPLY_RECEIVED",
+                server_id=self.server_id,
+                event="SV_HELLO_REPLY_RECEIVED",
+                peer_id=sender_id,
+                addr=f"{sender_ip}:{sender_port}",
+                nonce=msg.get("nonce"),
+                leader_id=msg.get("leader_id"),
+            )
+
+
             if sender_id in self.members and self.members[sender_id] != (sender_ip, sender_port):
                 key = (sender_id, sender_ip, sender_port)
                 if key not in self.seen_dup_sources:
+                    LOG_ERROR(
+                        "DUPLICATE_SERVER_ID",
+                        server_id=self.server_id,
+                        event="DUPLICATE_SERVER_ID",
+                        addr=f"{sender_ip}:{sender_port}",
+                        dup_server_id=sender_id,
+                        existing=str(self.members.get(sender_id)),
+                    )
                     print(
                         f"[{self.server_id}] ERROR: Duplicate server ID '{sender_id}' from "
                         f"{sender_ip}:{sender_port}. Existing is {self.members[sender_id]}. Ignoring."
@@ -255,15 +407,48 @@ class Server:
             self.members[sender_id] = (sender_ip, sender_port)
 
             if is_new:
+                LOG_INFO(
+                    "SV_SERVER_ADDED",
+                    server_id=self.server_id,
+                    event="SV_SERVER_ADDED",
+                    peer_id=sender_id,
+                    addr=f"{sender_ip}:{sender_port}",
+                    members_count=len(self.members),
+                )
                 print(f"[{self.server_id}] Added server {sender_id}")
                 print(f"[{self.server_id}] Members: {self.members}")
+
+            else:
+                LOG_INFO(
+                    "SV_MEMBER_UPDATED",
+                    server_id=self.server_id,
+                    event="SV_MEMBER_UPDATED",
+                    peer_id=sender_id,
+                    addr=f"{sender_ip}:{sender_port}",
+                    members_count=len(self.members),
+                )
 
             self.maybe_start_election(newly_seen_id=sender_id)
 
         elif msg_type == CLIENT_WHO_IS_LEADER:
             leader_id = self.leader_id
 
+            LOG_INFO(
+                "CL_LEADER_QUERY",
+                server_id=self.server_id,
+                event="CL_LEADER_QUERY",
+                leader_id=leader_id,
+                addr=f"{addr[0]}:{addr[1]}",
+            )
+
             if leader_id is None:
+                LOG_WARN(
+                    "CL_LEADER_UNKNOWN",
+                    server_id=self.server_id,
+                    event="CL_LEADER_UNKNOWN",
+                    addr=f"{addr[0]}:{addr[1]}",
+                )
+
                 reply = {
                     "type": CLIENT_LEADER_INFO,
                     "leader_id": None,
@@ -288,6 +473,15 @@ class Server:
                 "leader_ip": leader_ip,
                 "leader_port": leader_port,
             }
+
+            LOG_INFO(
+                "CL_LEADER_INFO_SENT",
+                server_id=self.server_id,
+                event="CL_LEADER_INFO_SENT",
+                leader_id=leader_id,
+                addr=f"{addr[0]}:{addr[1]}",
+                leader_addr=(f"{leader_ip}:{leader_port}" if leader_ip else None),
+            )
             self.sock.sendto(json.dumps(reply).encode(), addr)
 
         # ----------------- KEEPALIVE: CLIENT_PING / CLIENT_PONG -----------------
@@ -296,8 +490,25 @@ class Server:
             if client_id:
                 self.local_clients[client_id] = (addr[0], addr[1])
 
+            LOG_INFO(
+                "CL_PING_RECEIVED",
+                server_id=self.server_id,
+                event="CL_PING_RECEIVED",
+                leader_id=self.leader_id,
+                client_id=client_id,
+                addr=f"{addr[0]}:{addr[1]}",
+            )
+
             if self.leader_id == self.server_id and client_id and client_id in self.clients:
                 self.clients[client_id]["last_seen"] = time.time()
+
+                LOG_INFO(
+                    "CL_LASTSEEN_UPDATE",
+                    server_id=self.server_id,
+                    event="CL_LASTSEEN_UPDATE",
+                    leader_id=self.leader_id,
+                    client_id=client_id,
+                )
 
             reply = {
                 "type": CLIENT_PONG,
@@ -305,6 +516,15 @@ class Server:
                 "server_id": self.server_id,
                 "leader_id": self.leader_id,
             }
+
+            LOG_INFO(
+                "CL_PONG_SENT",
+                server_id=self.server_id,
+                event="CL_PONG_SENT",
+                leader_id=self.leader_id,
+                client_id=client_id,
+                addr=f"{addr[0]}:{addr[1]}",
+            )
             self.sock.sendto(json.dumps(reply).encode(), addr)
             return
         # ----------------------------------------------------------------------
@@ -315,11 +535,29 @@ class Server:
             username = (msg.get("username") or client_id or "anonymous").strip()
             req_id = msg.get("req_id") or uuid.uuid4().hex
 
+            LOG_INFO(
+                "CL_REGISTER_RECEIVED",
+                server_id=self.server_id,
+                event="CL_REGISTER_RECEIVED",
+                leader_id=self.leader_id,
+                client_id=client_id,
+                req_id=req_id,
+                addr=f"{addr[0]}:{addr[1]}",
+            )
+
             if client_id:
                 self.local_clients[client_id] = (addr[0], addr[1])
 
             # If election is in progress / leader unknown: don't accept writes here
             if self.leader_id is None:
+                LOG_WARN(
+                    "CL_REGISTER_REJECT_NO_LEADER",
+                    server_id=self.server_id,
+                    event="CL_REGISTER_REJECT_NO_LEADER",
+                    client_id=client_id,
+                    req_id=req_id,
+                    addr=f"{addr[0]}:{addr[1]}",
+                )
                 return
 
             # If leader: register and reply directly to client
@@ -328,6 +566,13 @@ class Server:
 
                 cached = self.seen_register.get(req_id)
                 if cached is not None:
+                    LOG_INFO(
+                        "CL_REGISTER_CACHE_HIT",
+                        server_id=self.server_id,
+                        event="CL_REGISTER_CACHE_HIT",
+                        leader_id=self.leader_id,
+                        req_id=req_id,
+                    )
                     self.sock.sendto(json.dumps(cached).encode(), addr)
                     return
 
@@ -347,12 +592,31 @@ class Server:
                     "leader_id": self.leader_id,
                 }
                 self.seen_register[req_id] = reply
+
+                LOG_INFO(
+                    "CLIENT_REGISTERED",
+                    server_id=self.server_id,
+                    event="CLIENT_REGISTERED",
+                    leader_id=self.leader_id,
+                    client_id=client_id,
+                    req_id=req_id,
+                    addr=f"{addr[0]}:{addr[1]}",
+                )
+
                 self.sock.sendto(json.dumps(reply).encode(), addr)
                 return
 
             # Not leader: forward to leader
             info = self.leader_info()
             if info is None:
+                LOG_WARN(
+                    "CL_REGISTER_FWD_NO_INFO",
+                    server_id=self.server_id,
+                    event="CL_REGISTER_FWD_NO_INFO",
+                    leader_id=self.leader_id,
+                    client_id=client_id,
+                    req_id=req_id,
+                )
                 return
             leader_addr = (info["leader_ip"], info["leader_port"])
 
@@ -366,20 +630,51 @@ class Server:
                 "client_addr": [addr[0], addr[1]],
                 "origin_server": self.server_id,
             }
+
+            LOG_INFO(
+                "CL_REGISTER_FWD",
+                server_id=self.server_id,
+                event="CL_REGISTER_FWD",
+                leader_id=info["leader_id"],
+                client_id=client_id,
+                req_id=req_id,
+                to=f"{leader_addr[0]}:{leader_addr[1]}",
+            )
+
             self.sock.sendto(json.dumps(fwd).encode(), leader_addr)
             return
 
         elif msg_type == REGISTER_FWD:
             if self.leader_id != self.server_id:
                 return
+            
+            origin_server = msg.get("origin_server")
 
             client_id = (msg.get("client_id") or msg.get("username") or "").strip()
             username = (msg.get("username") or client_id or "anonymous").strip()
             req_id = msg.get("req_id") or uuid.uuid4().hex
             now = time.time()
 
+            LOG_INFO(
+                "CL_REGISTER_FWD_RECEIVED",
+                server_id=self.server_id,
+                event="CL_REGISTER_FWD_RECEIVED",
+                leader_id=self.leader_id,
+                origin_server=origin_server,
+                client_id=client_id,
+                req_id=req_id,
+                addr=f"{addr[0]}:{addr[1]}",
+            )
+
             cached = self.seen_register.get(req_id)
             if cached is not None:
+                LOG_INFO(
+                    "CL_REGISTER_CACHE_HIT",
+                    server_id=self.server_id,
+                    event="CL_REGISTER_CACHE_HIT",
+                    leader_id=self.leader_id,
+                    req_id=req_id,
+                )
                 self.sock.sendto(json.dumps(cached).encode(), addr)
                 return
 
@@ -401,6 +696,17 @@ class Server:
             }
             self.seen_register[req_id] = reply
 
+            LOG_INFO(
+                "CL_REGISTERED_TO_ENTRY",
+                server_id=self.server_id,
+                event="CL_REGISTERED_TO_ENTRY",
+                leader_id=self.leader_id,
+                origin_server=origin_server,
+                client_id=client_id,
+                req_id=req_id,
+                addr=f"{addr[0]}:{addr[1]}",
+            )
+
             self.sock.sendto(json.dumps(reply).encode(), addr)
             return
 
@@ -411,6 +717,15 @@ class Server:
 
             client_addr = self.pending_registers.pop(req_id, None)
             if client_addr is not None:
+                LOG_INFO(
+                    "CL_REGISTERED_RELAY",
+                    server_id=self.server_id,
+                    event="CL_REGISTERED_RELAY",
+                    leader_id=msg.get("leader_id"),
+                    req_id=req_id,
+                    client_id=msg.get("client_id"),
+                    addr=f"{client_addr[0]}:{client_addr[1]}",
+                )
                 self.sock.sendto(json.dumps(msg).encode(), client_addr)
             return
         # ---------------------------------------------------
@@ -421,23 +736,69 @@ class Server:
             msg_id = msg.get("msg_id")
             payload = msg.get("payload")
 
+            LOG_INFO(
+                "CL_CHAT_RECEIVED",
+                server_id=self.server_id,
+                event="CL_CHAT_RECEIVED",
+                leader_id=self.leader_id,
+                msg_id=msg_id,
+                from_id=sender,
+                addr=f"{addr[0]}:{addr[1]}",
+            )
+
             if sender:
                 self.local_clients.setdefault(sender, (addr[0], addr[1]))
 
             # If election is in progress / leader unknown: don't accept writes here
             if self.leader_id is None:
+                LOG_WARN(
+                    "CL_CHAT_REJECT_NO_LEADER",
+                    server_id=self.server_id,
+                    event="CL_CHAT_REJECT_NO_LEADER",
+                    msg_id=msg_id,
+                    from_id=sender,
+                    addr=f"{addr[0]}:{addr[1]}",
+                )
                 return
 
             if self.leader_id == self.server_id:
                 if sender and msg_id:
                     seen = self.seen_chat.setdefault(sender, set())
                     if msg_id in seen:
+                        LOG_INFO(
+                            "CL_CHAT_DEDUP_HIT",
+                            server_id=self.server_id,
+                            event="CL_CHAT_DEDUP_HIT",
+                            leader_id=self.leader_id,
+                            msg_id=msg_id,
+                            from_id=sender,
+                        )
                         self.sock.sendto(json.dumps({"type": CHAT_ACK, "msg_id": msg_id}).encode(), addr)
                         return
                     seen.add(msg_id)
 
+                    LOG_INFO(
+                    "CL_CHAT_ACCEPTED",
+                    server_id=self.server_id,
+                    event="CL_CHAT_ACCEPTED",
+                    leader_id=self.leader_id,
+                    msg_id=msg_id,
+                    from_id=sender,
+                    addr=f"{addr[0]}:{addr[1]}",
+                )
+
+
                 print(f"[{self.server_id}] CHAT {msg_id} from {sender}: {payload}")
                 self.sock.sendto(json.dumps({"type": CHAT_ACK, "msg_id": msg_id}).encode(), addr)
+
+                LOG_INFO(
+                    "CL_CHAT_ACK_SENT",
+                    server_id=self.server_id,
+                    event="CL_CHAT_ACK_SENT",
+                    leader_id=self.leader_id,
+                    msg_id=msg_id,
+                    addr=f"{addr[0]}:{addr[1]}",
+                )
 
                 if sender and payload is not None and msg_id:
                     self._replicate_chat_multicast(sender, payload, msg_id)
@@ -445,7 +806,16 @@ class Server:
 
             info = self.leader_info()
             if info is None:
+                LOG_WARN(
+                    "CL_CHAT_FWD_NO_INFO",
+                    server_id=self.server_id,
+                    event="CL_CHAT_FWD_NO_INFO",
+                    leader_id=self.leader_id,
+                    msg_id=msg_id,
+                    from_id=sender,
+                )
                 return
+            
             leader_addr = (info["leader_ip"], info["leader_port"])
 
             if not msg_id:
@@ -460,6 +830,17 @@ class Server:
                 "msg_id": msg_id,
                 "payload": payload,
             }
+
+            LOG_INFO(
+                "CL_CHAT_FWD",
+                server_id=self.server_id,
+                event="CL_CHAT_FWD",
+                leader_id=info["leader_id"],
+                msg_id=msg_id,
+                from_id=sender,
+                to=f"{leader_addr[0]}:{leader_addr[1]}",
+            )
+
             self.sock.sendto(json.dumps(fwd).encode(), leader_addr)
             return
 
@@ -472,6 +853,17 @@ class Server:
             msg_id = msg.get("msg_id")
             payload = msg.get("payload")
 
+            LOG_INFO(
+                "CL_CHAT_FWD_RECEIVED",
+                server_id=self.server_id,
+                event="CL_CHAT_FWD_RECEIVED",
+                leader_id=self.leader_id,
+                msg_id=msg_id,
+                from_id=sender,
+                origin_server=origin,
+                addr=f"{addr[0]}:{addr[1]}",
+            )
+
             if sender and msg_id:
                 seen = self.seen_chat.setdefault(sender, set())
                 if msg_id in seen:
@@ -480,8 +872,25 @@ class Server:
                             json.dumps({"type": CHAT_ACK_FWD, "msg_id": msg_id}).encode(),
                             self.member_addr(origin),
                         )
+                        LOG_INFO(
+                            "CL_CHAT_ACK_FWD_SENT",
+                            server_id=self.server_id,
+                            event="CL_CHAT_ACK_FWD_SENT",
+                            leader_id=self.leader_id,
+                            msg_id=msg_id,
+                            to=str(self.member_addr(origin)),
+                        )
                     return
                 seen.add(msg_id)
+
+            LOG_INFO(
+                "CL_CHAT_ACCEPTED",
+                server_id=self.server_id,
+                event="CL_CHAT_ACCEPTED",
+                leader_id=self.leader_id,
+                msg_id=msg_id,
+                from_id=sender,
+            )
 
             print(f"[{self.server_id}] CHAT {msg_id} from {sender}: {payload}")
 
@@ -489,6 +898,14 @@ class Server:
                 self.sock.sendto(
                     json.dumps({"type": CHAT_ACK_FWD, "msg_id": msg_id}).encode(),
                     self.member_addr(origin),
+                )
+                LOG_INFO(
+                    "CL_CHAT_ACK_FWD_SENT",
+                    server_id=self.server_id,
+                    event="CL_CHAT_ACK_FWD_SENT",
+                    leader_id=self.leader_id,
+                    msg_id=msg_id,
+                    to=str(self.member_addr(origin)),
                 )
 
             if sender and payload is not None and msg_id:
@@ -499,8 +916,18 @@ class Server:
             msg_id = msg.get("msg_id")
             if not msg_id:
                 return
+            
             client_addr = self.pending_chat_acks.pop(msg_id, None)
+            
             if client_addr is not None:
+                LOG_INFO(
+                    "CL_CHAT_ACK_RELAY",
+                    server_id=self.server_id,
+                    event="CL_CHAT_ACK_RELAY",
+                    leader_id=self.leader_id,
+                    msg_id=msg_id,
+                    addr=f"{client_addr[0]}:{client_addr[1]}",
+                )
                 self.sock.sendto(json.dumps({"type": CHAT_ACK, "msg_id": msg_id}).encode(), client_addr)
             return
 
@@ -510,6 +937,16 @@ class Server:
 
         elif msg_type == DISCOVER_SERVER:
             # Client broadcast DISCOVER_SERVER -> unicast SERVER_INFO back
+            
+            LOG_INFO(
+                "CL_DISCOVER_RECEIVED",
+                server_id=self.server_id,
+                event="CL_DISCOVER_RECEIVED",
+                leader_id=self.leader_id,
+                nonce=msg.get("nonce"),
+                addr=f"{addr[0]}:{addr[1]}",
+            )
+            
             reply = {
                 "type": SERVER_INFO,
                 "nonce": msg.get("nonce"),
@@ -521,19 +958,59 @@ class Server:
             }
             self.broadcast.send_unicast(reply, addr)
 
+            LOG_INFO(
+                "CL_SERVER_INFO_SENT",
+                server_id=self.server_id,
+                event="CL_SERVER_INFO_SENT",
+                leader_id=self.leader_id,
+                is_leader=reply["is_leader"],
+                addr=f"{addr[0]}:{addr[1]}",
+            )
+
         elif msg_type == ELECTION:
+            LOG_INFO(
+                "EL_MSG_RECV", 
+                server_id=self.server_id, 
+                event="EL_MSG_RECV", 
+                addr=f"{addr[0]}:{addr[1]}"
+            )
             self.election.on_election(msg, addr)
 
         elif msg_type == ELECTION_OK:
+            LOG_INFO(
+                "EL_OK_RECV", 
+                server_id=self.server_id, 
+                event="EL_OK_RECV", 
+                addr=f"{addr[0]}:{addr[1]}"
+            )
             self.election.on_election_ok(msg, addr)
 
         elif msg_type == COORDINATOR:
+            LOG_INFO(
+                "EL_COORD_RECV", 
+                server_id=self.server_id, 
+                event="EL_COORD_RECV", 
+                addr=f"{addr[0]}:{addr[1]}"
+            )
             self.election.on_coordinator(msg, addr)
 
         elif msg_type == HEARTBEAT:
+            LOG_INFO(
+                "HB_RECV_DISPATCH", 
+                server_id=self.server_id, 
+                event="HB_RECV_DISPATCH", 
+                addr=f"{addr[0]}:{addr[1]}"
+            )
             self.heartbeat.on_heartbeat(msg, addr)
 
         else:
+            LOG_WARN(
+                "SV_UNKNOWN_MESSAGE",
+                server_id=self.server_id,
+                event="SV_UNKNOWN_MESSAGE",
+                msg_type=msg.get("type"),
+                addr=f"{addr[0]}:{addr[1]}",
+            )
             print(f"[{self.server_id}] Unknown message: {msg}")
 
     def priority(self, sid: str) -> int:
@@ -543,14 +1020,35 @@ class Server:
         if self.leader_id == leader_id:
             return
         self.leader_id = leader_id
+
+        LOG_INFO(
+            "SV_LEADER_CHANGED",
+            server_id=self.server_id,
+            event="SV_LEADER_CHANGED",
+            leader_id=self.leader_id,
+        )
+
         print(f"[{self.server_id}] Leader is now {self.leader_id}")
         self.heartbeat.on_leader_changed()
 
         # reset multicast epoch/seq state on leader change
         self.multicast.on_leader_changed()
 
+        LOG_INFO(
+            "MULTICAST_EPOCH_RESET",
+            server_id=self.server_id,
+            event="MULTICAST_EPOCH_RESET",
+            leader_id=self.leader_id,
+        )
+
         # followers auto-sync from the leader after leader change
         if self.leader_id != self.server_id:
+            LOG_INFO(
+                "MULTICAST_SYNC_TRIGGER",
+                server_id=self.server_id,
+                event="MULTICAST_SYNC_TRIGGER",
+                leader_id=self.leader_id,
+            )
             self.multicast.request_sync()
 
     def maybe_start_election(self, newly_seen_id=None):
@@ -564,12 +1062,25 @@ class Server:
 
         if self.leader_id is None:
             self.last_election_time = now
+            LOG_WARN(
+                "EL_TRIGGER_NO_LEADER",
+                server_id=self.server_id,
+                event="EL_TRIGGER_NO_LEADER",
+                members_count=len(self.members),
+            )
             self.election.start_election()
             return
 
         if newly_seen_id is not None:
             if self.priority(newly_seen_id) > self.priority(self.leader_id):
                 self.last_election_time = now
+                LOG_WARN(
+                    "EL_TRIGGER_HIGHER_NODE",
+                    server_id=self.server_id,
+                    event="EL_TRIGGER_HIGHER_NODE",
+                    leader_id=self.leader_id,
+                    newly_seen_id=newly_seen_id,
+                )
                 self.election.start_election()
 
 

@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from typing import Any, Deque, Dict, List, Optional, Set, Tuple
 from collections import deque
 
+from common.syslog import LOG_INFO, LOG_WARN
+
 MC_DATA = "MC_DATA"
 MC_ACK = "MC_ACK"
 MC_SYNC_REQ = "MC_SYNC_REQ"
@@ -69,6 +71,15 @@ class MulticastManager:
         Called whenever Server.set_leader() changes leader_id.
         We must drop any in-flight / buffered state because epochs are leader-owned.
         """
+
+        LOG_INFO(
+            "MULTICAST_LEADER_CHANGED",
+            server_id=self.server.server_id,
+            event="MULTICAST_LEADER_CHANGED",
+            leader_id=self.server.leader_id,
+            epoch=self.epoch,
+        )
+
         # Always clear retransmission state
         self._pending.clear()
         self._leader_addr = None
@@ -86,6 +97,15 @@ class MulticastManager:
             self.epoch += 1          # logical epoch bump
             self.seq = 0
 
+            LOG_INFO(
+                "MULTICAST_EPOCH_BUMP",
+                server_id=self.server.server_id,
+                event="MULTICAST_EPOCH_BUMP",
+                leader_id=self.server.server_id,
+                epoch=self.epoch,
+                seq=self.seq,
+            )
+            
             # Leader log is per-epoch; reset so we never replay old leader data
             self._log = []
         else:
@@ -116,6 +136,16 @@ class MulticastManager:
             },
         }
 
+        LOG_INFO(
+            "MULTICAST_DATA_TX",
+            server_id=self.server.server_id,
+            event="MULTICAST_DATA_TX",
+            leader_id=self.server.server_id,
+            epoch=self.epoch,
+            seq=self.seq,
+            msg_id=client_msg_id,
+        )
+        
         self._log.append(packet)
         self._accept_data(packet, (self.server.my_ip, self.server.port), is_self=True)
         if len(self._log) > 1000:
@@ -163,6 +193,17 @@ class MulticastManager:
             "msg_key": msg_key,
             "server_id": self.server.server_id,
         }
+
+        LOG_INFO(
+            "MULTICAST_ACK_TX",
+            server_id=self.server.server_id,
+            event="MULTICAST_ACK_TX",
+            leader_id=self.server.leader_id,
+            epoch=epoch,
+            msg_id=msg_key,   # msg_key is fine as correlation key
+            addr=(f"{self._leader_addr[0]}:{self._leader_addr[1]}" if self._leader_addr else "-"),
+        )
+
         if self._leader_addr:
             self.server.sock.sendto(json.dumps(ack).encode(), self._leader_addr)
 
@@ -170,10 +211,30 @@ class MulticastManager:
         epoch = msg["epoch"]
         seq = msg["seq"]
 
+        if not is_self:
+            LOG_INFO(
+                "MULTICAST_DATA_RX",
+                server_id=self.server.server_id,
+                event="MULTICAST_DATA_RX",
+                leader_id=msg.get("leader_id"),
+                epoch=epoch,
+                seq=seq,
+                msg_id=msg.get("chat", {}).get("msg_id"),
+                addr=f"{addr[0]}:{addr[1]}",
+            )
+
         old_epoch = self.epoch
 
         # Ignore packets from older epochs (stale leader)
         if epoch < self.epoch:
+            LOG_WARN(
+                "MULTICAST_STALE_EPOCH",
+                server_id=self.server.server_id,
+                event="MULTICAST_STALE_EPOCH",
+                leader_id=msg.get("leader_id"),
+                epoch=epoch,
+                seq=seq,
+            )
             if not is_self:
                 # Optional: ACK to stop old leader retransmitting
                 self._send_ack(epoch, msg["msg_key"])
@@ -222,6 +283,17 @@ class MulticastManager:
         if not self.is_leader():
             return
         p = self._pending.get(msg["msg_key"])
+
+        LOG_INFO(
+            "MULTICAST_ACK_RX",
+            server_id=self.server.server_id,
+            event="MULTICAST_ACK_RX",
+            leader_id=self.server.server_id,
+            epoch=msg.get("epoch"),
+            msg_id=msg.get("msg_key"),
+            from_id=msg.get("server_id"),
+        )
+        
         if p:
             p.acks.add(msg["server_id"])
 
@@ -232,13 +304,43 @@ class MulticastManager:
 
         for k, p in list(self._pending.items()):
             if required.issubset(p.acks):
+                LOG_INFO(
+                    "MULTICAST_ALL_ACKED",
+                    server_id=self.server.server_id,
+                    event="MULTICAST_ALL_ACKED",
+                    leader_id=self.server.server_id,
+                    msg_id=k,
+                    epoch=p.packet.get("epoch"),
+                    seq=p.packet.get("seq"),
+                )
                 self._pending.pop(k)
                 continue
             if now - p.last_sent < self.retransmit_interval:
                 continue
             if p.retries >= self.max_retries:
+                LOG_WARN(
+                    "MULTICAST_DROP_MAXRETRY",
+                    server_id=self.server.server_id,
+                    event="MULTICAST_DROP_MAXRETRY",
+                    leader_id=self.server.server_id,
+                    msg_id=k,
+                    epoch=p.packet.get("epoch"),
+                    seq=p.packet.get("seq"),
+                    retries=p.retries,
+                )
                 self._pending.pop(k)
                 continue
+
+            LOG_WARN(
+                "MULTICAST_RETX",
+                server_id=self.server.server_id,
+                event="MULTICAST_RETX",
+                leader_id=self.server.server_id,
+                msg_id=k,
+                epoch=p.packet.get("epoch"),
+                seq=p.packet.get("seq"),
+                retries=p.retries + 1,
+            )
             self._send_to_all(p.packet)
             p.last_sent = now
             p.retries += 1
@@ -252,6 +354,17 @@ class MulticastManager:
                 self._delivered_upto[epoch] = nxt
 
                 chat = pkt["chat"]
+
+                LOG_INFO(
+                    "MULTICAST_DELIVER",
+                    server_id=self.server.server_id,
+                    event="MULTICAST_DELIVER",
+                    leader_id=pkt.get("leader_id"),
+                    epoch=epoch,
+                    seq=self._delivered_upto[epoch],
+                    msg_id=pkt.get("chat", {}).get("msg_id"),
+                )
+                                
                 self.server._deliver_to_local_clients(
                     chat["from"], chat["payload"], chat["msg_id"]
                 )
@@ -287,12 +400,35 @@ class MulticastManager:
             "since_seq": since_seq,
             "server_id": self.server.server_id,
         }
+
+        LOG_WARN(
+            "MULTICAST_SYNC_REQ_TX",
+            server_id=self.server.server_id,
+            event="MULTICAST_SYNC_REQ_TX",
+            leader_id=info["leader_id"],
+            epoch=epoch,
+            since_seq=since_seq,
+            addr=f"{leader_addr[0]}:{leader_addr[1]}",
+        )
+        
         self.server.sock.sendto(json.dumps(req).encode(), leader_addr)
 
 
     def _on_sync_req(self, msg, addr):
         if not self.is_leader():
             return
+        
+        LOG_INFO(
+            "MULTICAST_SYNC_REQ_RX",
+            server_id=self.server.server_id,
+            event="MULTICAST_SYNC_REQ_RX",
+            leader_id=self.server.server_id,
+            epoch=msg.get("epoch"),
+            since_seq=msg.get("since_seq"),
+            from_id=msg.get("server_id"),
+            addr=f"{addr[0]}:{addr[1]}",
+        )
+
         epoch = msg["epoch"]
         since = msg["since_seq"]
 
@@ -302,10 +438,31 @@ class MulticastManager:
             since = 0
         msgs = [p for p in self._log if p["epoch"] == epoch and p["seq"] > since]
         reply = {"type": MC_SYNC_REPLY, "epoch": epoch, "msgs": msgs}
+
+        LOG_INFO(
+            "MULTICAST_SYNC_REPLY_TX",
+            server_id=self.server.server_id,
+            event="MULTICAST_SYNC_REPLY_TX",
+            leader_id=self.server.server_id,
+            epoch=epoch,
+            count=len(msgs),
+            addr=f"{addr[0]}:{addr[1]}",
+        )
+        
         self.server.sock.sendto(json.dumps(reply).encode(), addr)
 
 
     def _on_sync_reply(self, msg):
+
+        LOG_INFO(
+            "MULTICAST_SYNC_REPLY_RX",
+            server_id=self.server.server_id,
+            event="MULTICAST_SYNC_REPLY_RX",
+            leader_id=self.server.leader_id,
+            epoch=msg.get("epoch"),
+            count=len(msg.get("msgs", [])),
+        )
+        
         # Sync reply tells us the leader's epoch; adopt it first
         reply_epoch = msg.get("epoch")
         if reply_epoch is not None and reply_epoch >= self.epoch:
@@ -315,6 +472,15 @@ class MulticastManager:
         leader_addr = (info["leader_ip"], info["leader_port"])
 
         for pkt in msg.get("msgs", []):
+            LOG_INFO(
+                "MULTICAST_SYNC_APPLY",
+                server_id=self.server.server_id,
+                event="MULTICAST_SYNC_APPLY",
+                leader_id=self.server.leader_id,
+                epoch=pkt.get("epoch"),
+                seq=pkt.get("seq"),
+                msg_id=pkt.get("chat", {}).get("msg_id"),
+            )
             self._accept_data(pkt, leader_addr)
 
 

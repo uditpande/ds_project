@@ -23,6 +23,8 @@ from common.config import (
     CLIENT_PING,
 )
 
+from common.syslog import LOG_INFO, LOG_WARN, LOG_ERROR
+
 
 class Client:
     def __init__(self, client_id: str):
@@ -46,6 +48,12 @@ class Client:
         # Prevent double reconnects
         self.conn_lock = threading.Lock()
         self.reconnecting = False
+
+        LOG_INFO(
+            "CLIENT_STARTED",
+            server_id=self.client_id,   # reuse server_id field for node id
+            event="CLIENT_STARTED",
+        )
 
     def flush_socket(self):
         self.sock.settimeout(0.0)
@@ -81,16 +89,40 @@ class Client:
 
                 # Keepalive response: do not spam inbox
                 if mtype == CLIENT_PONG:
+                    LOG_INFO(
+                        "CLIENT_PONG_RECV",
+                        server_id=self.client_id,
+                        event="CLIENT_PONG_RECV",
+                        addr=f"{raddr[0]}:{raddr[1]}",
+                    )
                     continue
 
                 if mtype == CHAT_DELIVER:
                     sender = msg.get("from")
                     if sender == (self.registered_id or self.client_id):
                         continue
+
+                    LOG_INFO(
+                        "CLIENT_CHAT_DELIVER",
+                        server_id=self.client_id,
+                        event="CLIENT_CHAT_DELIVER",
+                        from_id=sender,
+                        msg_id=msg.get("msg_id"),
+                    )
+
                     print(f"\n[{sender}] {msg.get('payload')}")
+
                 else:
                     # For control messages, only accept those from current entry server
                     if self.server_addr and raddr != self.server_addr:
+                        LOG_WARN(
+                            "CL_CTRL_FROM_OTHER_SERVER_IGNORED",
+                            server_id=self.client_id,
+                            event="CL_CTRL_FROM_OTHER_SERVER_IGNORED",
+                            addr=f"{raddr[0]}:{raddr[1]}",
+                            expected=f"{self.server_addr[0]}:{self.server_addr[1]}",
+                            msg_type=mtype,
+                        )
                         continue
                     self.inbox.put(msg)
 
@@ -113,6 +145,14 @@ class Client:
             "nonce": nonce,
             "client_id": self.client_id,
         }
+
+        LOG_INFO(
+            "CLIENT_DISCOVER_SENT",
+            server_id=self.client_id,
+            event="CLIENT_DISCOVER_SENT",
+            nonce=nonce,
+            addr=f"{BROADCAST_ADDR}:{DISCOVERY_PORT}",
+        )
 
         dsock.sendto(json.dumps(discovery_msg).encode(), (BROADCAST_ADDR, DISCOVERY_PORT))
 
@@ -146,14 +186,40 @@ class Client:
             ip = reply.get("ip") or addr[0]
             servers[(sid, ip, int(port))] = reply
 
+            LOG_INFO(
+                "CLIENT_SERVER_INFO_RECV",
+                server_id=self.client_id,
+                event="CLIENT_SERVER_INFO_RECV",
+                peer_id=sid,
+                leader_id=reply.get("leader_id"),
+                is_leader=reply.get("is_leader"),
+                addr=f"{ip}:{int(port)}",
+            )
+
         dsock.close()
 
         if not servers:
+            LOG_ERROR(
+                "CLIENT_DISCOVER_FAIL",
+                server_id=self.client_id,
+                event="CLIENT_DISCOVER_FAIL",
+                nonce=nonce,
+            )
             raise Exception("No servers found")
 
         chosen = random.choice(list(servers.values()))
         ip = chosen.get("ip")
         port = int(chosen.get("port"))
+
+        LOG_INFO(
+            "CLIENT_ENTRY_CHOSEN",
+            server_id=self.client_id,
+            event="CLIENT_ENTRY_CHOSEN",
+            peer_id=chosen.get("server_id"),
+            addr=f"{ip}:{port}",
+            leader_id=chosen.get("leader_id"),
+            entry_is_leader=chosen.get("is_leader"),
+        )
 
         print(
             f"[{self.client_id}] Entry server {chosen.get('server_id')} at {ip}:{port} "
@@ -163,14 +229,28 @@ class Client:
 
     def register(self) -> bool:
         if not self.server_addr:
+            LOG_WARN(
+                "CLIENT_REGISTER_NO_SERVER",
+                server_id=self.client_id,
+                event="CLIENT_REGISTER_NO_SERVER",
+            )
             print(f"[{self.client_id}] Cannot register: no server selected")
             return False
 
+        req_id = uuid.uuid4().hex
         msg = {
             "type": CLIENT_REGISTER,
             "client_id": self.client_id,
             "username": self.client_id,
         }
+
+        LOG_INFO(
+            "CLIENT_REGISTER_SENT",
+            server_id=self.client_id,
+            event="CLIENT_REGISTER_SENT",
+            req_id=req_id,
+            addr=f"{self.server_addr[0]}:{self.server_addr[1]}",
+        )
 
         self.sock.sendto(json.dumps(msg).encode(), self.server_addr)
 
@@ -183,8 +263,25 @@ class Client:
 
             if reply.get("type") == CLIENT_REGISTERED:
                 self.registered_id = reply.get("client_id") or self.client_id
+                LOG_INFO(
+                    "CLIENT_REGISTERED_OK",
+                    server_id=self.client_id,
+                    event="CLIENT_REGISTERED_OK",
+                    req_id=req_id,
+                    leader_id=reply.get("leader_id"),
+                    client_id=self.registered_id,
+                )
+
                 print(f"[{self.client_id}] Registered successfully as {self.registered_id}")
                 return True
+
+        LOG_WARN(
+            "CLIENT_REGISTER_TIMEOUT",
+            server_id=self.client_id,
+            event="CLIENT_REGISTER_TIMEOUT",
+            req_id=req_id,
+            addr=f"{self.server_addr[0]}:{self.server_addr[1]}",
+        )
 
         print(f"[{self.client_id}] Registration timed out")
         return False
@@ -222,6 +319,14 @@ class Client:
             "payload": text,
         }
 
+        LOG_INFO(
+            "CLIENT_CHAT_SENT",
+            server_id=self.client_id,
+            event="CLIENT_CHAT_SENT",
+            msg_id=msg_id,
+            addr=f"{self.server_addr[0]}:{self.server_addr[1]}",
+        )
+
         self.sock.sendto(json.dumps(msg).encode(), self.server_addr)
 
         deadline = time.time() + 1.2
@@ -232,12 +337,34 @@ class Client:
                 continue
 
             if reply.get("type") == CHAT_ACK and reply.get("msg_id") == msg_id:
+                LOG_INFO(
+                    "CLIENT_CHAT_ACK_RECEIVED",
+                    server_id=self.client_id,
+                    event="CLIENT_CHAT_ACK_RECEIVED",
+                    msg_id=msg_id,
+                )
                 return
+            
+        LOG_WARN(
+            "CLIENT_CHAT_ACK_TIMEOUT",
+            server_id=self.client_id,
+            event="CLIENT_CHAT_ACK_TIMEOUT",
+            msg_id=msg_id,
+            addr=f"{self.server_addr[0]}:{self.server_addr[1]}",
+        )
 
         self._reconnect("chat ack timeout")
         self._wait_reconnect_done(timeout=2.0)
         if not self.server_addr:
             return
+        
+        LOG_INFO(
+            "CLIENT_CHAT_RETRY",
+            server_id=self.client_id,
+            event="CLIENT_CHAT_RETRY",
+            msg_id=msg_id,
+            addr=f"{self.server_addr[0]}:{self.server_addr[1]}",
+        )
 
         self.sock.sendto(json.dumps(msg).encode(), self.server_addr)
 
@@ -249,7 +376,20 @@ class Client:
                 continue
 
             if reply.get("type") == CHAT_ACK and reply.get("msg_id") == msg_id:
+                LOG_INFO(
+                    "CLIENT_CHAT_ACK_RECEIVED",
+                    server_id=self.client_id,
+                    event="CLIENT_CHAT_ACK_RECEIVED",
+                    msg_id=msg_id,
+                )
                 return
+            
+        LOG_ERROR(
+            "CLIENT_CHAT_FAIL_NO_ACK",
+            server_id=self.client_id,
+            event="CLIENT_CHAT_FAIL_NO_ACK",
+            msg_id=msg_id,
+        )
 
         print(f"[{self.client_id}] Failed to deliver message after reconnect (no ACK)")
 
@@ -262,6 +402,13 @@ class Client:
         except OSError:
             pass
 
+        LOG_INFO(
+            "CLIENT_PING_SENT",
+            server_id=self.client_id,
+            event="CLIENT_PING_SENT",
+            addr=f"{self.server_addr[0]}:{self.server_addr[1]}",
+        )
+
     def _reconnect(self, reason: str):
         with self.conn_lock:
             if self.reconnecting:
@@ -269,24 +416,55 @@ class Client:
             self.reconnecting = True
 
         try:
+            LOG_WARN(
+                "CLIENT_RECONNECT_START",
+                server_id=self.client_id,
+                event="CLIENT_RECONNECT_START",
+                reason=reason,
+            )
             print(f"[{self.client_id}] Reconnecting ({reason})...")
             self.flush_socket()
 
             try:
                 self.server_addr = self.discover_server()
             except Exception as e:
+                LOG_ERROR(
+                    "CLIENT_RECONNECT_DISCOVERY_FAIL",
+                    server_id=self.client_id,
+                    event="CLIENT_RECONNECT_DISCOVERY_FAIL",
+                    reason=str(e),
+                )
                 print(f"[{self.client_id}] Discovery failed: {e}")
                 self.server_addr = None
                 return
 
+            LOG_INFO(
+                "CLIENT_RECONNECT_NEW_ENTRY",
+                server_id=self.client_id,
+                event="CLIENT_RECONNECT_NEW_ENTRY",
+                addr=f"{self.server_addr[0]}:{self.server_addr[1]}",
+            )
             print(f"[{self.client_id}] New entry server {self.server_addr}")
 
             ok = self.register()
             if not ok:
+                LOG_ERROR(
+                    "CLIENT_RECONNECT_REGISTER_FAIL",
+                    server_id=self.client_id,
+                    event="CLIENT_RECONNECT_REGISTER_FAIL",
+                )
                 self.server_addr = None
                 return
 
             self.last_seen = time.time()
+
+            LOG_INFO(
+                "CLIENT_RECONNECT_DONE",
+                server_id=self.client_id,
+                event="CLIENT_RECONNECT_DONE",
+                addr=f"{self.server_addr[0]}:{self.server_addr[1]}",
+            )
+
         finally:
             with self.conn_lock:
                 self.reconnecting = False
@@ -305,12 +483,32 @@ class Client:
             self._send_ping()
 
             if (time.time() - self.last_seen) > self.dead_after:
+                LOG_WARN(
+                    "CLIENT_KEEPALIVE_TIMEOUT",
+                    server_id=self.client_id,
+                    event="CLIENT_KEEPALIVE_TIMEOUT",
+                    addr=f"{self.server_addr[0]}:{self.server_addr[1]}",
+                    dead_after=self.dead_after,
+                )
                 self._reconnect("keepalive timeout")
 
     def start(self):
+        LOG_INFO(
+            "CLIENT_START",
+            server_id=self.client_id,
+            event="CLIENT_START",
+        )
         print(f"[{self.client_id}] Client started")
 
         self.server_addr = self.discover_server()
+
+        LOG_INFO(
+            "CLIENT_USE_ENTRY",
+            server_id=self.client_id,
+            event="CLIENT_USE_ENTRY",
+            addr=f"{self.server_addr[0]}:{self.server_addr[1]}",
+        )
+
         print(f"[{self.client_id}] Using entry server {self.server_addr}")
 
         self.flush_socket()
@@ -323,7 +521,7 @@ class Client:
         ka = threading.Thread(target=self.keepalive_loop, daemon=True)
         ka.start()
 
-        # ✅ interactive loop (this was missing in your pasted file)
+        # interactive loop (this was missing in your pasted file)
         while True:
             text = input(">> ")
             self.send_chat(text)

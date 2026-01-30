@@ -1,0 +1,10 @@
+sdc
+as
+
+
+Adding colours in wireshark to differentiate between info, warn, error
+Go to View → Coloring Rules…
+Click + Add and fill
+SYSLOG_INFO -> name
+syslog && frame contains "level=INFO" -> filter
+Same with others
