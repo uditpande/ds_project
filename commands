@@ -1,2 +1,8 @@
 run the server : python -m server.server s1 5001 (server_name server port)
 run the client: python -m client.client c1 (client_name)
+
+wireshark
+
+syslog
+frame contains "...."
+!(frame contains "...")
