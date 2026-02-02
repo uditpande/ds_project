@@ -346,6 +346,30 @@ class MulticastManager:
             p.retries += 1
 
 
+    # def _try_deliver(self):
+    #     for epoch in sorted(self._holdback):
+    #         nxt = self._delivered_upto[epoch] + 1
+    #         while nxt in self._holdback[epoch]:
+    #             pkt = self._holdback[epoch].pop(nxt)
+    #             self._delivered_upto[epoch] = nxt
+    #
+    #             chat = pkt["chat"]
+    #
+    #             LOG_INFO(
+    #                 "MULTICAST_DELIVER",
+    #                 server_id=self.server.server_id,
+    #                 event="MULTICAST_DELIVER",
+    #                 leader_id=pkt.get("leader_id"),
+    #                 epoch=epoch,
+    #                 seq=self._delivered_upto[epoch],
+    #                 msg_id=pkt.get("chat", {}).get("msg_id"),
+    #             )
+    #
+    #             self.server._deliver_to_local_clients(
+    #                 chat["from"], chat["payload"], chat["msg_id"]
+    #             )
+    #             nxt += 1
+
     def _try_deliver(self):
         for epoch in sorted(self._holdback):
             nxt = self._delivered_upto[epoch] + 1
@@ -355,21 +379,18 @@ class MulticastManager:
 
                 chat = pkt["chat"]
 
-                LOG_INFO(
-                    "MULTICAST_DELIVER",
-                    server_id=self.server.server_id,
-                    event="MULTICAST_DELIVER",
-                    leader_id=pkt.get("leader_id"),
-                    epoch=epoch,
-                    seq=self._delivered_upto[epoch],
-                    msg_id=pkt.get("chat", {}).get("msg_id"),
+                # 🔴 ADD THIS LINE (replication proof)
+                print(
+                    f"[{self.server.server_id}] REPL_DELIVER "
+                    f"epoch={pkt['epoch']} seq={pkt['seq']} "
+                    f"from={chat['from']} msg_id={chat['msg_id']} "
+                    f"payload={chat['payload']}"
                 )
-                                
+
                 self.server._deliver_to_local_clients(
                     chat["from"], chat["payload"], chat["msg_id"]
                 )
                 nxt += 1
-
 
     def request_sync(self):
         """
