@@ -403,8 +403,21 @@ class MulticastManager:
         # We need the leader's (ip, port) to send the request.
         # If we haven't received any MC_DATA yet, _leader_addr may be None.
         info = self.server.leader_info()  # already exists in your server.py
-        if info["leader_id"] == self.server.server_id and not self.is_leader():
-            return  # leader not known yet
+        # leader_info might be None (current code) or missing fields (after prune/restart)
+        if not info:
+            return
+        
+        leader_id = info.get("leader_id")
+        leader_ip = info.get("leader_ip")
+        leader_port = info.get("leader_port")
+
+        # If leader address isn't known yet, skip (do NOT crash)
+        if not leader_id or not leader_ip or not leader_port:
+            return
+
+        # If leader_id points to ourselves but we aren't leader, election isn't settled yet
+        if leader_id == self.server.server_id and not self.is_leader():
+            return
         
         leader_addr = (info["leader_ip"], info["leader_port"])
 

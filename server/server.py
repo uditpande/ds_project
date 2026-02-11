@@ -92,8 +92,8 @@ class Server:
         Returns current known leader info.
         If leader is unknown, returns None.
         """
-        if self.leader_id is None:
-            return None
+
+        leader_id = self.leader_id if self.leader_id is not None else self.server_id
 
         leader_id = self.leader_id
 
@@ -104,7 +104,7 @@ class Server:
             ip, port = self.member_addr(leader_id)
             return {"leader_id": leader_id, "leader_ip": ip, "leader_port": port}
 
-        return None
+        return {"leader_id": leader_id, "leader_ip": None, "leader_port": None}
 
     def member_addr(self, sid):
         v = self.members[sid]
@@ -295,16 +295,6 @@ class Server:
                 "port": self.port,
                 "leader_id": self.leader_id,  # can be None
             }
-
-            LOG_INFO(
-                "SV_HELLO_REPLY_SENT",
-                server_id=self.server_id,
-                event="SV_HELLO_REPLY_SENT",
-                peer_id=sender_id,
-                addr=f"{addr[0]}:{addr[1]}",
-                nonce=reply.get("nonce"),
-                leader_id=self.leader_id,
-            )
 
             self.broadcast.send_unicast(reply, addr)
 
