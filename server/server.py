@@ -688,6 +688,16 @@ class Server:
                 self.last_election_time = now
                 self.election.start_election()
 
+def validate_server_id(server_id: str):
+    if not server_id.startswith("s"):
+        raise ValueError("Server ID must start with 's' (e.g., s1, s2)")
+
+    num = server_id[1:]
+    if not num.isdigit():
+        raise ValueError("Server ID must be 's' followed by a number")
+
+    if int(num) <= 0:
+        raise ValueError("Server ID number must be > 0")
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
@@ -696,6 +706,12 @@ if __name__ == "__main__":
 
     server_id = sys.argv[1]
     port = int(sys.argv[2])
+
+    try:
+        validate_server_id(server_id)
+    except ValueError as e:
+        print(f"Invalid SERVER_ID '{server_id}': {e}")
+        sys.exit(1)
 
     server = Server(server_id, port)
     server.listen()
